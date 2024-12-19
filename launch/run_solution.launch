@@ -32,7 +32,7 @@
         <param name="debug" value="true" />
         
         <node pkg="octomap_server" type="octomap_server_node" name="octomap_server_$(arg namespace)">
-		    <param name="resolution" value="4" />
+		    <param name="resolution" value="3" />
 		
             <!-- fixed map frame (set to 'map' if SLAM or localization running!) -->
             <param name="frame_id" type="string" value="world" />
@@ -57,6 +57,7 @@
 		<node name="explorer_trajectory" pkg="kios_solution" type="explorer.py"  output="screen"/>
         <node name="fov_control" pkg="kios_solution" type="uav_fov.py"  output="screen"/>
         <node name="explorer_path" pkg="kios_solution" type="explorer_path.py"  output="screen"/>
+        <node name="multi_ppcom_pub" pkg="kios_solution" type="multi_ppcom.py" output="screen"/>
     </group>
 
     <group unless="$(eval arg('scenario') == 'hangar')">
@@ -69,7 +70,7 @@
             <param name="debug" value="true" />
 
             <node pkg="octomap_server" type="octomap_server_node" name="octomap_server_$(arg namespace)">
-                <param name="resolution" value="4" />
+                <param name="resolution" value="3" />
                 
                 <!-- fixed map frame (set to 'map' if SLAM or localization running!) -->
                 <param name="frame_id" type="string" value="world" />
@@ -94,7 +95,8 @@
             <node name="explorer_trajectory" pkg="kios_solution" type="explorer.py"  output="screen"/>
             <node name="explorer_path" pkg="kios_solution" type="explorer_path.py"  output="screen"/>
             <node name="fov_control" pkg="kios_solution" type="uav_fov.py"  output="screen"/>
-
+	    <node name="multi_ppcom_pub" pkg="kios_solution" type="multi_ppcom.py" output="screen"/>
+	    
         </group>
     </group>
     
@@ -109,6 +111,7 @@
         <node name="fov_control" pkg="kios_solution" type="uav_fov.py"  output="screen"/>
         <node name="photographer_trajectory" pkg="kios_solution" type="photographer.py"  output="screen"/>
         <node name="photographer_path" pkg="kios_solution" type="photographer_path.py"  output="screen"/>
+        <node name="multi_ppcom_pub" pkg="kios_solution" type="multi_ppcom.py" output="screen"/>
     </group>
     
 
@@ -122,6 +125,7 @@
         <node name="fov_control" pkg="kios_solution" type="uav_fov.py"  output="screen"/>
         <node name="photographer_trajectory" pkg="kios_solution" type="photographer.py"  output="screen"/>
         <node name="photographer_path" pkg="kios_solution" type="photographer_path.py"  output="screen"/>
+        <node name="multi_ppcom_pub" pkg="kios_solution" type="multi_ppcom.py" output="screen"/>
     </group>
     
     <group unless="$(eval arg('scenario') == 'hangar')">
@@ -135,6 +139,7 @@
             <node name="fov_control" pkg="kios_solution" type="uav_fov.py"  output="screen"/>
             <node name="photographer_trajectory" pkg="kios_solution" type="photographer.py"  output="screen"/>
             <node name="photographer_path" pkg="kios_solution" type="photographer_path.py"  output="screen"/>
+            <node name="multi_ppcom_pub" pkg="kios_solution" type="multi_ppcom.py" output="screen"/>
         </group>
     </group>
     

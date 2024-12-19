@@ -791,7 +791,7 @@ def main():
     target_pub = rospy.Publisher("/"+namespace+"/command/targetPoint", Point, queue_size=1)
     # Get Neighbor Positions
     rospy.Subscriber("/"+namespace+"/nbr_odom_cloud", PointCloud2, neighCallback)
-    
+
     # Create a ppcom publisher
     # Wait for service to appear
     log_info("Waiting for ppcom")

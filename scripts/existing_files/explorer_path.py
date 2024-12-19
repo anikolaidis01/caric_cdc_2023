@@ -437,19 +437,7 @@ def main():
                 # log_info(point[3])
                 uav_positions = np.append(uav_positions, [[point[0], point[1], point[2]]], axis=0)
                 uav_indices = np.append(uav_indices, point[3])
-                #test distance between UAVs
-        # print([position.x, position.y, position.z])
-        for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
-            point_message = Point()
-            point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
-            d = euclidean_distance_points(position,point_message)
-            if d<=90 and d>= 50:
-                continue
-            elif d<50 and d<=30:
-                continue
-            else:
-                print('Communication available! Distance:'+str(d))
-            
+
         pos = 0
         while (pos < len(uav_indices)) and (uav_indices[pos] < drone_IDs[namespace]):
             pos += 1

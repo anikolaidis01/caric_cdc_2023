@@ -72,7 +72,7 @@ include_directories(
 )
 
 link_directories(${GAZEBO_LIBRARY_DIRS})
-link_directories("/home/dronesteam/ws_caric/kios_solution/scripts")
+link_directories("/home/dronesteam/caric_competition/src/caric_cdc_2023/scripts")
 # list(APPEND CMAKE_CXX_FLAGS "${GAZEBO_CXX_FLAGS}")
 
 ## Declare a C++ executable
@@ -88,3 +88,4 @@ catkin_install_python(PROGRAMS scripts/uav_fov.py DESTINATION ${CATKIN_PACKAGE_B
 catkin_install_python(PROGRAMS scripts/explorer_path.py DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 catkin_install_python(PROGRAMS scripts/photographer.py DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 catkin_install_python(PROGRAMS scripts/photographer_path.py DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+catkin_install_python(PROGRAMS scripts/multi_ppcom.py DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})

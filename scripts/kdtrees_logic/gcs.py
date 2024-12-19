@@ -13,6 +13,7 @@ from nav_msgs.msg import Odometry
 from caric_mission.srv import CreatePPComTopic
 from kios_solution.msg import area
 import traceback
+import time
 
 debug = False
 TAG = ""
@@ -46,7 +47,7 @@ def rafflesMapCallback(msg):
     rafflesMap = msg
     rafflesTime = rospy.Time.now()
 
-def process_boxes(msg):
+def process_boxes(msg): # find the lowest and highest  x, y,z from the points 
     global debug
     points = msg.points
     minx = 99999
@@ -81,7 +82,9 @@ def find_world_min_max(msg, min_max):
     maxy = min_max[3]
     maxz = min_max[5]
 
-    for point in sensor_msgs.point_cloud2.read_points(msg, skip_nans=True):
+    for point in sensor_msgs.point_cloud2.read_points(msg, skip_nans=True): #Read points from a L{sensor_msgs.PointCloud2} message and Generator which yields a list of values for each point.
+        #log_info(f"AAAAAAAAAAAAAAAAAAAAAAAAPoint: x={point[0]}, y={point[1]}, z={point[2]},N={point[3]}\n")
+
         if minx > point[0]:
             minx = point[0]
         if maxx < point[0]:
@@ -116,7 +119,7 @@ def find_world_min_max(msg, min_max):
     relax = 5
     minx = round(minx-relax)
     maxx = round(maxx+relax)
-    if (abs(minx) + abs(maxx))%grid_res!=0:
+    if (abs(minx) + abs(maxx))%grid_res!=0: 
         maxx += grid_res-(abs(minx) + abs(maxx))%grid_res
 
     miny = round(miny-relax)
@@ -125,7 +128,7 @@ def find_world_min_max(msg, min_max):
             maxy += grid_res-(abs(miny) + abs(maxy))%grid_res
 
     minz = round(max(2.0,minz-relax))
-    maxz = round(maxz+relax) ##
+    maxz = round(maxz+relax)
     if (abs(minz) + abs(maxz))%grid_res!=0:
             maxz += grid_res-(abs(minz) + abs(maxz))%grid_res
     return [minx, maxx, miny, maxy, minz, maxz]
@@ -147,14 +150,13 @@ def main():
         set_tag("[" + namespace.upper() + " SCRIPT]: ")
 
     rospy.init_node(namespace, anonymous=True)
-    log_info(namespace)
+    log_info(namespace) # tells you which node you initialize
 
-    rate = rospy.Rate(1)
+    rate = rospy.Rate(1) # make the loop one per seccond, if it was 2 , 2 times the loop per seccond
 
     # wait for gazebo
-    rospy.wait_for_service("/gazebo/get_model_state")
-    get_state = rospy.ServiceProxy('/gazebo/get_model_state', GetModelState)
-    rate.sleep()
+    rospy.wait_for_service("/gazebo/get_model_state") # This line waits for a ROS service to become available.
+    get_state = rospy.ServiceProxy('/gazebo/get_model_state', GetModelState) #creates a ServiceProxy object named get_state that allows you to call the /gazebo/get_model_state service  which is GetModelState type
 
     state = get_state(model_name=scenario)
     while state.status_message != "GetModelState: got properties":
@@ -163,10 +165,10 @@ def main():
         state = get_state(model_name=namespace)
         rate.sleep()
     
-    jurongTime = rospy.Time.now()
-    rafflesTime = rospy.Time.now()
+    # jurongTime = rospy.Time.now()
+    # rafflesTime = rospy.Time.now()
     # subscribe to self topics
-    rospy.Subscriber("/"+namespace+"/ground_truth/odometry", Odometry, odomCallback)
+    rospy.Subscriber("/"+namespace+"/ground_truth/odometry", Odometry, odomCallback) #  your ROS node is saying, "I want to receive messages published on this topic."Whenever a new message is published on that topic, the callback_function you specify will be invoked with the received message as its argument.
     rospy.Subscriber("/jurong/adjacency/"+namespace, Int16MultiArray, jurongMapCallback)
     rospy.Subscriber("/raffles/adjacency/"+namespace, Int16MultiArray, rafflesMapCallback)
 
@@ -181,23 +183,28 @@ def main():
     create_ppcom_topic('gcs', ['all'], "/"+namespace+"/adjacency", 'std_msgs', 'Int16MultiArray')
     # Create the publisher
     # coords pub
-    msg_pub = rospy.Publisher('/world_coords', area, queue_size=1)
+    msg_pub = rospy.Publisher('/world_coords', area, queue_size=1) 
     # norm pub
-    adj_pub = rospy.Publisher("/"+namespace+"/adjacency", Int16MultiArray, queue_size=1, latch=True)
+    adj_pub = rospy.Publisher("/"+namespace+"/adjacency", Int16MultiArray, queue_size=1, latch=True) # latch=True: This ensures that the most recent message published to the topic is saved and sent to any future subscribers that connect to the topic
 
 
-    # Get Bounding Box Verticies
-    bboxes = rospy.wait_for_message("/gcs/bounding_box_vertices/", PointCloud)
+    # Get Bounding Box Verticies (to kitrino)
+    bboxes = rospy.wait_for_message("/gcs/bounding_box_vertices/", PointCloud) 
     min_max = process_boxes(bboxes)
+    
+
+    #with open("arhiko_occ.txt", "a") as file:
+    #  for o in bboxes:
+    #   i=closest_node_index_1((o[0],o[1],o[2]),coordinates)
+    #   file.write(str(i)+", ")
 
     # Get Neighbor Positions
     log_info("Waiting for neighbors positions")
-    neighbors = rospy.wait_for_message("/"+namespace+"/nbr_odom_cloud", PointCloud2)
-
+    neighbors = rospy.wait_for_message("/"+namespace+"/nbr_odom_cloud", PointCloud2)#neighbour  is the cords of all the uav
     # Calculate discretized world
     log_info("Calculating discretized world size")
     min_max = find_world_min_max(neighbors, min_max)
-    size_x = (abs(min_max[0]) + abs(min_max[1]))/grid_res
+    size_x = (abs(min_max[0]) + abs(min_max[1]))/grid_res # is how many grid cell will be in the x demination
     size_y = (abs(min_max[2]) + abs(min_max[3]))/grid_res
     size_z = (abs(min_max[4]) + abs(min_max[5]))/grid_res
 
@@ -209,15 +216,27 @@ def main():
     area_msg.size.y = size_y
     area_msg.size.z = size_z
     area_msg.resolution.data = grid_res
+    
 
     log_info("DONE")
-    while not rospy.is_shutdown():
+    msg_pub.publish(area_msg) 
+    while not rospy.is_shutdown(): 
         rate.sleep()
-        msg_pub.publish(area_msg)
-        if jurongTime > rafflesTime:
+        #start_time=time.time()   
+
+        # Check and convert to rospy.Time if necessary
+        if isinstance(jurongTime, (int, float)):
+         jurongTime = rospy.Time.from_sec(jurongTime)  # Convert int/float to rospy.Time
+        if isinstance(rafflesTime, (int, float)):
+         rafflesTime = rospy.Time.from_sec(rafflesTime)  # Convert int/float to rospy.Time
+    
+        if jurongTime.to_sec() > rafflesTime.to_sec(): # molis kamei o jurong i o ruffles publish sto ruffles i jurong/adjacency tote  to msg mpainei sto jurongmap kai andistoihws me to ruffles kai kamnei to publish gia na to pkoiaoun jini pou ehoun los mazi me to gcs
             adj_pub.publish(jurongMap)
         else:
             adj_pub.publish(rafflesMap)
+        # elapsed_time = time.time() - start_time
+        # with open("time22.txt", "a") as file:
+        #     file.write(f"Time taken to construct adjacency: {elapsed_time:.4f} seconds "+namespace+"\n")    
 
 if __name__ == '__main__':
     try:

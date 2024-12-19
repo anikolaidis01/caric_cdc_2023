@@ -1,5 +1,5 @@
 ################ Photographer Trajectory Code ################
-__author__ = "Andreas Anastasiou, Angelos Zacharia, Antonis Nikolaides"
+__author__ = "Andreas Anastasiou, Angelos Zacharia"
 __copyright__ = "Copyright (C) 2023 Kios Center of Excellence"
 __version__ = "7.0"
 ##############################################################
@@ -18,7 +18,8 @@ import numpy as np
 import heapq
 import threading
 import traceback
-import numba as nb
+from scipy.spatial import KDTree
+import time
 
 maxVel = 3.0
 debug = False
@@ -43,131 +44,59 @@ offsets_cross = [
     (0,-1,0), (1,0,0), (0,1,0), (-1,0,0), (0,0,1), (0,0,-1)
 ]
 
-def dijkstra1(g, arrival_pub, s, t):
-    
+def dijkstra(g, arrival_pub, s, t):  #t = target is the node of the target point ,g=adj neigh
     if (s==t):
         # init arrival message
-        arrived_msg = Bool()
-        arrived_msg.data = True
-        arrival_pub.publish(arrived_msg)
-        # log_info("ARRIVED")
-        return [s,s]
-    
-    if (len(np.nonzero(g[s,:])[0]) == 0): 
-        log_info("Source " + str(s) + " blocked")
+        #log_info("Arrived at " + str(t))
+        log_info("Arrived at " + str(coordinates[t]))
         arrived_msg = Bool()
         arrived_msg.data = True
         arrival_pub.publish(arrived_msg)
         return [s,s]
     
-    if (len(np.nonzero(g[:,t])[0]) == 0):
+    if (len(np.nonzero(g[s,:])[0]) == 0): ## ean i grammi tou source den ehei pou na paei 
+        log_info("Source " + str(t) + " blocked")
+        arrived_msg = Bool()
+        arrived_msg.data = True
+        arrival_pub.publish(arrived_msg)
+        return [s,s]
+    
+    if (len(np.nonzero(g[:,t])[0]) == 0): ## ean sto  target den mporei na paei kanenas
         log_info("Target " + str(t) + " not reachable")
         arrived_msg = Bool()
         arrived_msg.data = True
-        arrival_pub.publish(arrived_msg)
+        arrival_pub.publish(arrived_msg) #allaksa
         return [s,s]
     
-    q = []
+    # Initialize distance and priority queue
     d = {n: float('inf') for n in range(len(g))}
-    p = {}
-
     d[s] = 0
-    heapq.heappush(q, (0, s))
-
+    p = {}
+    q = [(0, s)]
+    
     last_w, curr_v = heapq.heappop(q)
 
-    # log_info(g[:,t])
     while  curr_v != t:
 
-        neighbor_indices = np.nonzero(g[curr_v,:])
-        #log_info(neighbor_indices)
-        #for n, n_w in zip(nodes,g[curr_v]):
-        #log_info("kokos")
-        for n in neighbor_indices[0]:
-            #log_info("kokos")
+        neighbor_indices = np.nonzero(g[curr_v,:])[0] # pkoianei ta indices gia to pou mporei na paei apo to current 
+        for n in neighbor_indices:
             n_w = g[curr_v,n]
-            #if n_w == 0:
-            #    continue
-
+            
             cand_w = last_w + n_w # equivalent to d[curr_v] + n_w 
-            # print d # uncomment to see how deltas are updated
             if cand_w < d[n]:
                 d[n] = cand_w
                 p[n] = curr_v
                 heapq.heappush(q, (cand_w, n))
         last_w, curr_v = heapq.heappop(q)  
-
+        
     return generate_path(p, s, t)
 
-@nb.jit(nopython=True, cache=True, fastmath = True)
-def dijkstra(g, s, t):  
-    global namespace
-    if (s==t):
-        print(""+namespace+"| Arrived at " + str(t))
-        return [s,s]
-    
-    if (len(np.nonzero(g[s,:])[0]) == 0): 
-        print("Source " + str(t) + " blocked")
-        return [s,s]
-    
-    if (len(np.nonzero(g[:,t])[0]) == 0):
-        print("Target " + str(t) + " not reachable")
-        return [s,s]
-    
-    # q = []
-    # d = []#np.asarray(1000000)
-    d = np.ones(len(g))*9999
-    p = {}
-
-    #heapq.heappush(q, (0, s))
-    q_w = np.array([0])
-    q_v = np.array([s])
-    #last_w, curr_v = heapq.heappop(q)
-    ind = np.argmin(q_w)
-    last_w = q_w[ind]
-    curr_v = q_v[ind]
-    q_w = np.delete(q_w,ind)
-    q_v = np.delete(q_v,ind)
-    while  curr_v != t:
-
-        neighbor_indices = np.nonzero(g[curr_v,:])
-        for n in neighbor_indices[0]:
-            n_w = g[curr_v,n]
-
-            cand_w = int(np.add(last_w, n_w)) # equivalent to d[curr_v] + n_w 
-            if cand_w < d[n]:
-                d[n] = cand_w
-                p[n] = curr_v
-                q_w = np.append(q_w, cand_w)
-                q_v = np.append(q_v, [n])
-                #heapq.heappush(q, ((last_w + n_w), n)) 
-        # last_w, curr_v = heapq.heappop(q)  
-        ind = np.argmin(q_w)
-        last_w = q_w[ind]
-        curr_v = q_v[ind]
-        q_w = np.delete(q_w,ind)
-        q_v = np.delete(q_v,ind)
-
-    path = [t]
-    while True:
-        key = p[path[0]]
-        path.insert(0, key)
-        if key == s:
-            break
-    # print(path)
-    return path
-    #return generate_path(p, s, t)
 
 def generate_path(parents, start, end):
-        path = [end]
-        #log_info("Recreating path")
-        while True:
-            key = parents[path[0]]
-            path.insert(0, key)
-            if key == start:
-                break
-        #log_info("Returning path")
-        return path
+    path = [end]
+    while path[0] != start:
+        path.insert(0, parents[path[0]])
+    return path
 
 def set_tag(tag):
     global TAG
@@ -204,112 +133,78 @@ def closest_node_index_1(node, nodes):
     distances = np.linalg.norm(nodes - node, axis=1)
     return np.argmin(distances)
 
-def constuct_adjacency1111(area_details, coordinates):
+
+def construct_adjacency(area_details, coordinates):
+    #start_time=time.time()
     global offsets_cross
-    num_of_nodes = len(coordinates)
-    adjacency_1 = np.zeros((num_of_nodes,num_of_nodes))
+    num_of_nodes = len(coordinates) 
+    adjacency_1 = np.zeros((num_of_nodes, num_of_nodes)) 
+    
+    tree = KDTree(coordinates)
     log_info("Starting Adjacency calculation. Please wait... ")
-    for _,coord in enumerate(coordinates):
-        for _, offset in enumerate(offsets_cross):
-            neighbor_x = coord[0]+(offset[0] * area_details.resolution.data)
-            neighbor_y = coord[1]+(offset[1] * area_details.resolution.data)
-            neighbor_z = coord[2]+(offset[2] * area_details.resolution.data)
-           
+    
+    for  coord in coordinates:
+        _, my_index = tree.query(coord, k=1)
+        
+        for  offset in offsets_cross:
+            neighbor_x = coord[0] + (offset[0] * area_details.resolution.data) 
+            neighbor_y = coord[1] + (offset[1] * area_details.resolution.data)
+            neighbor_z = coord[2] + (offset[2] * area_details.resolution.data)
             
-            gone_too_far_x = (neighbor_x < area_details.minPoint.x) or (neighbor_x > (area_details.minPoint.x + area_details.size.x*area_details.resolution.data))
-            gone_too_far_y = (neighbor_y < area_details.minPoint.y) or (neighbor_y > (area_details.minPoint.y + area_details.size.y*area_details.resolution.data))
-            gone_too_far_z = (neighbor_z < area_details.minPoint.z) or (neighbor_z > (area_details.minPoint.z + area_details.size.z*area_details.resolution.data))
+            gone_too_far_x = (neighbor_x < area_details.minPoint.x) or (neighbor_x > (area_details.minPoint.x + area_details.size.x * area_details.resolution.data))
+            gone_too_far_y = (neighbor_y < area_details.minPoint.y) or (neighbor_y > (area_details.minPoint.y + area_details.size.y * area_details.resolution.data))
+            gone_too_far_z = (neighbor_z < area_details.minPoint.z) or (neighbor_z > (area_details.minPoint.z + area_details.size.z * area_details.resolution.data))
+            
             if gone_too_far_x or gone_too_far_y or gone_too_far_z:
                 continue
             
-            
-            neighbor_index = closest_node_index_1((neighbor_x, neighbor_y, neighbor_z),coordinates)
-            my_index = closest_node_index_1((coord[0], coord[1], coord[2]),coordinates)
+            _, neighbor_index = tree.query((neighbor_x, neighbor_y, neighbor_z), k=1)
             
             
-            # cost = euclidean_distance_3d(coord, coordinates[neighbor_index])
             try:
-                adjacency_1[my_index,neighbor_index] = 1 #cost
-                adjacency_1[neighbor_index,my_index] = 1 #cost
-            except:
+                adjacency_1[my_index, neighbor_index] = 1  # or some cost if calculated
+                adjacency_1[neighbor_index, my_index] = 1  # or some cost if calculated
+            except IndexError:
                 pass
-
+    # elapsed_time = time.time() - start_time
+    # with open("new2.txt", "a") as file:
+    #    file.write(f"Time taken to construct adjacency: {elapsed_time:.4f} seconds\n")
+   
     return adjacency_1
 
-@nb.jit(nopython=True, cache=True)
-def constuct_adjacency(data, x, y, z, size_x, size_y, size_z, coordinates):
-    offsets_cross = [(0,-1,0), (1,0,0), (0,1,0), (-1,0,0), (0,0,1), (0,0,-1)]
-    num_of_nodes = len(coordinates)
-    adjacency_1 = np.zeros((num_of_nodes,num_of_nodes))
-    # log_info("Starting Adjacency calculation. Please wait... ")
-    for _,coord in enumerate(coordinates):
-        for _, offset in enumerate(offsets_cross):
-            neighbor_x = coord[0]+(offset[0] * data)
-            neighbor_y = coord[1]+(offset[1] * data)
-            neighbor_z = coord[2]+(offset[2] * data)
-           
-            
-            gone_too_far_x = (neighbor_x < x) or (neighbor_x > (x + size_x*data))
-            gone_too_far_y = (neighbor_y < y) or (neighbor_y > (y + size_y*data))
-            gone_too_far_z = (neighbor_z < z) or (neighbor_z > (z + size_z*data))
-            if gone_too_far_x or gone_too_far_y or gone_too_far_z:
-                continue
-            
-            
-            # neighbor_index = closest_node_index_1((neighbor_x, neighbor_y, neighbor_z),coordinates)
-            distances = np.empty(coordinates.shape[0], dtype=coordinates.dtype)
-            for i in nb.prange(coordinates.shape[0]):
-                distances[i] = np.sqrt((coordinates[i, 0]-neighbor_x)*(coordinates[i, 0]-neighbor_x) + (coordinates[i, 1]-neighbor_y)*(coordinates[i, 1]-neighbor_y) + (coordinates[i, 2]-neighbor_z)*(coordinates[i, 2]-neighbor_z))
-                
-            #distances = np.linalg.norm(coordinates - np.array([neighbor_x, neighbor_y, neighbor_z]))
-            neighbor_index =  np.argmin(distances)
+def update_adjacency_with_neighbors(adjacency):   
+    # start_time=time.time()
+    global neighbors, grid_resolution, coordinates, area_details # ta neighbours edw  einai oi coords twn uav twn allwn extos sftou me to nm 
+    # add LOS neighbors as obstacles in graph
+    tree = KDTree(coordinates)
 
-            # my_index = closest_node_index_1((coord[0], coord[1], coord[2]),coordinates)
-            distances = np.empty(coordinates.shape[0], dtype=coordinates.dtype)
-            for i in nb.prange(coordinates.shape[0]):
-                distances[i] = np.sqrt((coordinates[i, 0]-coord[0]) *(coordinates[i, 0]-coord[0]) + (coordinates[i, 1]-coord[1]) *(coordinates[i, 1]-coord[1]) + (coordinates[i, 2]-coord[2]) *(coordinates[i, 2]-coord[2]))
-            #distances = np.linalg.norm(coordinates - np.array([coord[0], coord[1], coord[2]]))
-            my_index =  np.argmin(distances)
+    adjacency_temp = np.copy(adjacency)
+
+    for point in sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True):
+       
+       if point[2] >= 1 and point[3] != 0: # den einai gcs kai peta 
+            #index = closest_node_index_1((point[0], point[1], point[2]), coordinates) ## finds what node from coordinates is the  neighbour uav
+            _,index=tree.query((point[0], point[1], point[2]),k=1)       # finds what node from coordinates is the  neighbour uav
+            adjacency_temp[:,index]=0 ## en mporei na paei se coords pou vriskontai alla uav 
+            for offset in offsets_cross:
+                neighbor_x = coordinates[index][0]+(offset[0] * grid_resolution)
+                neighbor_y = coordinates[index][1]+(offset[1] * grid_resolution)
+                neighbor_z = coordinates[index][2]+(offset[2] * grid_resolution)
+                if (area_details.minPoint.x <= neighbor_x <= area_details.minPoint.x + area_details.size.x * area_details.resolution.data and
+                    area_details.minPoint.y <= neighbor_y <= area_details.minPoint.y + area_details.size.y * area_details.resolution.data and
+                    area_details.minPoint.z <= neighbor_z <= area_details.minPoint.z + area_details.size.z * area_details.resolution.data):
+                   
             
-            # cost = euclidean_distance_3d(coord, coordinates[neighbor_index])
-            try:
-                adjacency_1[my_index,neighbor_index] = 1#cost
-                adjacency_1[neighbor_index,my_index] = 1#cost
-                #print("DAME PAEIS POU ", my_index , " DAME ", neighbor_index)
-            except:
-                pass
+                 _,neighbor_index=tree.query((neighbor_x, neighbor_y, neighbor_z),k=1)
+                 adjacency_temp[:,neighbor_index]=0
+                    
 
-    return adjacency_1
-
-def update_adjacency_with_neighbors(adjacency_og):
-    global neighbors, grid_resolution, coordinates, area_details
-    adjacency_temp = np.copy(adjacency_og)
-    for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
-        if point[3] != 0 and point[2] >= 1: 
-            index = closest_node_index_1((point[0], point[1], point[2]), coordinates)
-            adjacency_temp[:,index]=0
-            for q, offset in enumerate(offsets_cross):
-                neighbor_x = coordinates[index,0]+(offset[0] * grid_resolution)
-                neighbor_y = coordinates[index,1]+(offset[1] * grid_resolution)
-                neighbor_z = coordinates[index,2]+(offset[2] * grid_resolution)
-            
-                gone_too_far_x = (neighbor_x < area_details.minPoint.x) or (neighbor_x > (area_details.minPoint.x + area_details.size.x*area_details.resolution.data))
-                gone_too_far_y = (neighbor_y < area_details.minPoint.y) or (neighbor_y > (area_details.minPoint.y + area_details.size.y*area_details.resolution.data))
-                gone_too_far_z = (neighbor_z < area_details.minPoint.z) or (neighbor_z > (area_details.minPoint.z + area_details.size.z*area_details.resolution.data))
-                if gone_too_far_x or gone_too_far_y or gone_too_far_z:
-                    #log_info(f"{gone_too_far_x}, {gone_too_far_y}, {gone_too_far_z}")
-                    continue
-               
-                neighbor_index = closest_node_index_1((neighbor_x, neighbor_y, neighbor_z),coordinates)
-                adjacency_temp[:,neighbor_index]=0
-
-    arr = np.sum(adjacency_temp, axis=1)
-    isolated_indicies = np.where(arr <= 2)[0]
-    adjacency_temp[:,isolated_indicies] = 0
-
+    isolated_indices = np.where(np.sum(adjacency_temp, axis=1) < 2)[0] #prostheteis tin kathe grammi kai opkoia ehei 0 i 1 times 1 pernoume to index tis
+    adjacency_temp[:, isolated_indices] = 0
+   
     return adjacency_temp
 
-@nb.jit(nopython=True, cache=True, fastmath = True)
+
 def euclidean_distance_3d(p1,p2):
     return math.sqrt( math.pow(p1[0]-p2[0],2) + math.pow(p1[1]-p2[1],2) + math.pow(p1[2]-p2[2],2))
 
@@ -394,61 +289,36 @@ def closest_node_index(node, nodes):
     
     return valid_dist_indices[np.argmin(distances)]#valid_dist_indices[np.argmin(dist_2)]
 
+def create_marker(coord, color_b):
+        marker = Marker()
+        marker.header.frame_id = "world"
+        marker.type = Marker.CUBE
+        marker.action = Marker.ADD
+        marker.scale.x = grid_resolution
+        marker.scale.y = grid_resolution
+        marker.scale.z = grid_resolution
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = color_b
+        marker.color.a = 0.9
+        marker.pose.orientation.w = 1.0
+        marker.pose.position.x = coord[0]
+        marker.pose.position.y = coord[1]
+        marker.pose.position.z = coord[2]
+        return marker
 def publish_graph_viz():
     global waypoint, namespace, viz_pub, coordinates, adjacency
     marker_array = MarkerArray()
     rate = rospy.Rate(0.1)
     # while True:
+        # Loop through each coordinate and add markers for isolated nodes
     for indx, coord in enumerate(coordinates):
-        if sum(adjacency[:,indx]) == 0:
-            marker = Marker()
-            marker.header.frame_id = "world"
-            marker.type = marker.CUBE
-            marker.action = marker.ADD
-            marker.scale.x = grid_resolution
-            marker.scale.y = grid_resolution
-            marker.scale.z = grid_resolution
-            #marker.color.a = 0.05
-            #index = closest_node_index(coord,coords)
-            
-            marker.color.r = 1.0
-            marker.color.g = 0.0
-            marker.color.b = 0.0
-            marker.color.a = 0.9
-            # else:
-            #     marker.color.r = 1.0
-            #     marker.color.g = 1.0
-            #     marker.color.b = 1.0
-            marker.pose.orientation.w = 1.0
-            marker.pose.position.x = coord[0]
-            marker.pose.position.y = coord[1]
-            marker.pose.position.z = coord[2]
+        if not np.any(adjacency[:, indx]):  
+            marker = create_marker(coord, color_b=0.0)
             marker_array.markers.append(marker)
-        elif sum(adjacency[indx,:]) == 0:
-            marker = Marker()
-            marker.header.frame_id = "world"
-            marker.type = marker.CUBE
-            marker.action = marker.ADD
-            marker.scale.x = grid_resolution
-            marker.scale.y = grid_resolution
-            marker.scale.z = grid_resolution
-            #marker.color.a = 0.05
-            #index = closest_node_index(coord,coords)
-            
-            marker.color.r = 1.0
-            marker.color.g = 0.0
-            marker.color.b = 1.0
-            marker.color.a = 0.9
-            # else:
-            #     marker.color.r = 1.0
-            #     marker.color.g = 1.0
-            #     marker.color.b = 1.0
-            marker.pose.orientation.w = 1.0
-            marker.pose.position.x = coord[0]
-            marker.pose.position.y = coord[1]
-            marker.pose.position.z = coord[2]
+        elif not np.any(adjacency[indx, :]): 
+            marker = create_marker(coord, color_b=1.0)
             marker_array.markers.append(marker)
-
     marker = Marker()
     marker.header.frame_id = "world"
     marker.type = marker.SPHERE
@@ -474,9 +344,11 @@ def publish_graph_viz():
     viz_pub.publish(marker_array)
         # rate.sleep()
 
+
+
 def main():
     # init
-    global cmdPub, waypoint, command_thread, coordinates, target, grid_resolution, namespace, debug, adjacency, area_details, viz_pub, adjacency_neigh,scenario
+    global cmdPub, waypoint, command_thread, coordinates, target, grid_resolution, namespace, debug, adjacency, area_details, viz_pub, adjacency_neigh
     try:
         namespace = rospy.get_param('namespace') # node_name/argsname
         scenario = rospy.get_param('scenario')
@@ -490,7 +362,7 @@ def main():
         scenario = 'mbs'
         debug = True
         set_tag("[" + namespace.upper() + " TRAJ SCRIPT]: ")
-	
+		
     rospy.init_node(namespace, anonymous=True)
     rate = rospy.Rate(10)
 
@@ -508,19 +380,23 @@ def main():
     viz_pub = rospy.Publisher("/"+namespace+"/adjacency_viz", MarkerArray, queue_size=1)
     # occupied coordinates publisher
     arrival_pub = rospy.Publisher('/'+namespace+'/arrived_at_target', Bool, queue_size=1)
+    
 
     # Get inspection area details
     log_info("Waiting for area details")
     area_details = rospy.wait_for_message("/world_coords/"+namespace, area)
+    #TO ENSURE THAT THE SPECIFIC NAMESPASE PATH OR NO PATH TAKE THE AREA DETAILS
+    # with open("confirm_area_details.txt", "a") as file:
+    #     file.write(namespace+" sketto  "+ str(area_details)+"/n")
     log_info("Construct Adjacency")    
     xrange = range(int(area_details.minPoint.x + area_details.resolution.data/2), int(area_details.minPoint.x + area_details.size.x * area_details.resolution.data - area_details.resolution.data/2) + int(area_details.resolution.data), int(area_details.resolution.data)) 
     yrange = range(int(area_details.minPoint.y + area_details.resolution.data/2), int(area_details.minPoint.y + area_details.size.y * area_details.resolution.data - area_details.resolution.data/2) + int(area_details.resolution.data), int(area_details.resolution.data)) 
     zrange = range(int(area_details.minPoint.z + area_details.resolution.data/2), int(area_details.minPoint.z + area_details.size.z * area_details.resolution.data - area_details.resolution.data/2) + int(area_details.resolution.data), int(area_details.resolution.data)) 
     # Constructing the graph
     coordinates = np.asarray([(x,y,z) for x in xrange for y in yrange for z in zrange])
-    # adjacency_org = constuct_adjacency(area_details, coordinates)
-    adjacency_org = constuct_adjacency(area_details.resolution.data, area_details.minPoint.x, area_details.minPoint.y, area_details.minPoint.z, area_details.size.x, area_details.size.y, area_details.size.z, coordinates)
-    
+    adjacency_org = construct_adjacency(area_details, coordinates)
+    tree = KDTree(coordinates)
+
     # create thread
     waypoint = (-3000,-3000,-3000)
     command_thread = threading.Thread(target=go_to_point)
@@ -528,48 +404,46 @@ def main():
 
     occupied_msg = Int16MultiArray()
     log_info("Waiting for map from explorers")
-    while len(occupied_msg.data) == 0:
+    while len(occupied_msg.data) == 0: ## pkoianei ton xarti molis ginei merged, kartera minima sto topic tou jurong kai raffle kai  an den erthei kai prohorisei kai meta ginei , tote tha ginei apo to gcs to opoio tha pkoiei to msg apo jurong kai raffle
         try:
-            occupied_msg = rospy.wait_for_message("/jurong/adjacency/"+namespace, Int16MultiArray, 0.1)
-            # log_info("Receivied map from Jurong")
+            occupied_msg = rospy.wait_for_message("/jurong/adjacency/"+namespace, Int16MultiArray, 0.1) ##explorer 264
+            log_info("Receivied map from Jurong")
         except rospy.exceptions.ROSException as e:
             try:
                 occupied_msg = rospy.wait_for_message("/raffles/adjacency/"+namespace, Int16MultiArray, 0.1)
-                # log_info("Receivied map from Raffles")
+                log_info("Receivied map from Raffles")
             except rospy.exceptions.ROSException as e:
                 try:
                     occupied_msg = rospy.wait_for_message("/gcs/adjacency/"+namespace, Int16MultiArray, 0.1)
-                    # log_info("Receivied new map from GCS")
+                    log_info("Receivied new map from GCS")
                 except rospy.exceptions.ROSException as e:
                     pass
                 # log_info("Waiting for map from explorers")
-        rate.sleep() 
-    
+        rate.sleep()
     log_info("Loading map")
     occupied_indicies = np.asarray(occupied_msg.data)
     adjacency = np.copy(adjacency_org)
     adjacency[:,occupied_indicies] = 0
     adjacency_neigh = update_adjacency_with_neighbors(adjacency)
     publish_graph_viz()
-    
-    log_info("Waiting for target point")
-    arrival_pub.publish(True)
+    ###############################################3
+    log_info("Waiting for target point") 
+    arrival_pub.publish(True) ## sana kai lallei tou , ksereis egw epkoia to map , simainei egine merged oi explorers , ksekina na to vriskeis kai esi
     try:
-        rospy.wait_for_message("/"+namespace+"/command/targetPoint", Point)
+        rospy.wait_for_message("/"+namespace+"/command/targetPoint", Point) # stohos na mpei touto kai meta na kamei publish target
     except rospy.exceptions.ROSException as e:
-        log_info("Waiting for target point TIMEOUT")
-        target =  closest_node_index((odom.pose.pose.position.x,odom.pose.pose.position.y,odom.pose.pose.position.z),coordinates)
-
+        log_info("Waiting for target point TIMEOUT") # an den ertei valle san targetton eauto you
+        target =  closest_node_index((odom.pose.pose.position.x,odom.pose.pose.position.y,odom.pose.pose.position.z),coordinates) #n=1 so kdtree is uneccesary 
+        
+   
     while not rospy.is_shutdown():
         try:
-            agent_index = closest_node_index_1(([odom.pose.pose.position.x,odom.pose.pose.position.y,odom.pose.pose.position.z]),coordinates)
-            path = dijkstra(adjacency_neigh, agent_index, target)
-            if (len(path)==2):
-                arrived_msg = Bool()
-                arrived_msg.data = True
-                arrival_pub.publish(arrived_msg)
+            _,agent_index =  tree.query((odom.pose.pose.position.x,odom.pose.pose.position.y,odom.pose.pose.position.z),k=1)
+            #agent_index = closest_node_index_1(([odom.pose.pose.position.x,odom.pose.pose.position.y,odom.pose.pose.position.z]),coordinates)#n=1 so kdtree is uneccesary 
+            #log_info("Generating path. Starting Point: " + str(agent_index) + " Target Point: " + str(target))
+            path = dijkstra(adjacency_neigh, arrival_pub, agent_index, target)
             #log_info("Going to point: " + str(coordinates[path[1]]))
-            waypoint = coordinates[path[1]]
+            waypoint = coordinates[path[1]]#kathe fora pou alazei point tsiakarei an eirte se los me kanenan explorer i gcs gia na pkoiaei neo xarti
 
             new_map = False
             try:

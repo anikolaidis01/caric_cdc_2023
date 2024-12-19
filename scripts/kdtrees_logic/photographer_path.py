@@ -1,5 +1,5 @@
 ############### Photographer Path Planning Code ##############
-__author__ = "Andreas Anastasiou, Angelos Zacharia, Antonis Nikolaides"
+__author__ = "Andreas Anastasiou, Angelos Zacharia"
 __copyright__ = "Copyright (C) 2023 Kios Center of Excellence"
 __version__ = "7.0"
 ##############################################################
@@ -15,8 +15,10 @@ import sensor_msgs.point_cloud2
 from scipy.spatial import Delaunay
 import numpy as np
 import math
+from scipy.spatial import KDTree
 import traceback
-import numba as nb
+import time
+
 
 repeat = True
 debug = False
@@ -41,89 +43,59 @@ def closest_node_index_1(node, nodes):
     distances = np.linalg.norm(nodes - node, axis=1)
     return np.argmin(distances)
 
-def constuct_adjacency11(area_details, coordinates):
+def construct_adjacency(area_details, coordinates):
     global offsets_cross
-    num_of_nodes = len(coordinates)
-    adjacency_1 = np.zeros((num_of_nodes,num_of_nodes))
+    num_of_nodes = len(coordinates) 
+    adjacency_1 = np.zeros((num_of_nodes, num_of_nodes)) 
+    
+    tree = KDTree(coordinates)
     log_info("Starting Adjacency calculation. Please wait... ")
-    for _,coord in enumerate(coordinates):
+    
+    for _, coord in enumerate(coordinates):
+        _, my_index = tree.query(coord, k=1)
+        
+        # with open("con_adj_"+namespace+".txt", "a") as file:
+        #   file.write("my index " + str(my_index) +" " +str(coordinates[my_index])+ "\n")
+        
         for _, offset in enumerate(offsets_cross):
-            neighbor_x = coord[0]+(offset[0] * area_details.resolution.data)
-            neighbor_y = coord[1]+(offset[1] * area_details.resolution.data)
-            neighbor_z = coord[2]+(offset[2] * area_details.resolution.data)
-           
+            neighbor_x = coord[0] + (offset[0] * area_details.resolution.data) 
+            neighbor_y = coord[1] + (offset[1] * area_details.resolution.data)
+            neighbor_z = coord[2] + (offset[2] * area_details.resolution.data)
             
-            gone_too_far_x = (neighbor_x < area_details.minPoint.x) or (neighbor_x > (area_details.minPoint.x + area_details.size.x*area_details.resolution.data))
-            gone_too_far_y = (neighbor_y < area_details.minPoint.y) or (neighbor_y > (area_details.minPoint.y + area_details.size.y*area_details.resolution.data))
-            gone_too_far_z = (neighbor_z < area_details.minPoint.z) or (neighbor_z > (area_details.minPoint.z + area_details.size.z*area_details.resolution.data))
+            gone_too_far_x = (neighbor_x < area_details.minPoint.x) or (neighbor_x > (area_details.minPoint.x + area_details.size.x * area_details.resolution.data))
+            gone_too_far_y = (neighbor_y < area_details.minPoint.y) or (neighbor_y > (area_details.minPoint.y + area_details.size.y * area_details.resolution.data))
+            gone_too_far_z = (neighbor_z < area_details.minPoint.z) or (neighbor_z > (area_details.minPoint.z + area_details.size.z * area_details.resolution.data))
+            
             if gone_too_far_x or gone_too_far_y or gone_too_far_z:
                 continue
             
+            _, neighbor_index = tree.query((neighbor_x, neighbor_y, neighbor_z), k=1)
             
-            neighbor_index = closest_node_index_1((neighbor_x, neighbor_y, neighbor_z),coordinates)
-            my_index = closest_node_index_1((coord[0], coord[1], coord[2]),coordinates)
-            
-            
-            # cost = euclidean_distance_3d(coord, coordinates[neighbor_index])
+            # with open("con_adj_"+namespace+".txt", "a") as file:
+            #  file.write("my neigh coordinates are " + str(neighbor_x) + " " + str(neighbor_y) + " " + str(neighbor_z) + " and the closest node is " + str(neighbor_index) + " with these coordinates " + str(coordinates[neighbor_index][0]) + " , " + str(coordinates[neighbor_index][1]) + " , " + str(coordinates[neighbor_index][2]) + "\n")
+
             try:
-                adjacency_1[my_index,neighbor_index] = 1 #cost
-                adjacency_1[neighbor_index,my_index] = 1 #cost
-            except:
+                adjacency_1[my_index, neighbor_index] = 1  # or some cost if calculated
+                adjacency_1[neighbor_index, my_index] = 1  # or some cost if calculated
+            except IndexError:
                 pass
 
     return adjacency_1
 
-@nb.jit(nopython=True, cache=True)
-def constuct_adjacency(data, x, y, z, size_x, size_y, size_z, coordinates):
-    offsets_cross = [(0,-1,0), (1,0,0), (0,1,0), (-1,0,0), (0,0,1), (0,0,-1)]
-    num_of_nodes = len(coordinates)
-    adjacency_1 = np.zeros((num_of_nodes,num_of_nodes))
-    # log_info("Starting Adjacency calculation. Please wait... ")
-    for _,coord in enumerate(coordinates):
-        for _, offset in enumerate(offsets_cross):
-            neighbor_x = coord[0]+(offset[0] * data)
-            neighbor_y = coord[1]+(offset[1] * data)
-            neighbor_z = coord[2]+(offset[2] * data)
-           
-            
-            gone_too_far_x = (neighbor_x < x) or (neighbor_x > (x + size_x*data))
-            gone_too_far_y = (neighbor_y < y) or (neighbor_y > (y + size_y*data))
-            gone_too_far_z = (neighbor_z < z) or (neighbor_z > (z + size_z*data))
-            if gone_too_far_x or gone_too_far_y or gone_too_far_z:
-                continue
-            
-            
-            # neighbor_index = closest_node_index_1((neighbor_x, neighbor_y, neighbor_z),coordinates)
-            distances = np.empty(coordinates.shape[0], dtype=coordinates.dtype)
-            for i in nb.prange(coordinates.shape[0]):
-                distances[i] = np.sqrt((coordinates[i, 0]-neighbor_x)*(coordinates[i, 0]-neighbor_x) + (coordinates[i, 1]-neighbor_y)*(coordinates[i, 1]-neighbor_y) + (coordinates[i, 2]-neighbor_z)*(coordinates[i, 2]-neighbor_z))
-                
-            #distances = np.linalg.norm(coordinates - np.array([neighbor_x, neighbor_y, neighbor_z]))
-            neighbor_index =  np.argmin(distances)
+# def check_point_inside_cuboid(vertices, point):
+#     DT = Delaunay(vertices)
 
-            # my_index = closest_node_index_1((coord[0], coord[1], coord[2]),coordinates)
-            distances = np.empty(coordinates.shape[0], dtype=coordinates.dtype)
-            for i in nb.prange(coordinates.shape[0]):
-                distances[i] = np.sqrt((coordinates[i, 0]-coord[0]) *(coordinates[i, 0]-coord[0]) + (coordinates[i, 1]-coord[1]) *(coordinates[i, 1]-coord[1]) + (coordinates[i, 2]-coord[2]) *(coordinates[i, 2]-coord[2]))
-            #distances = np.linalg.norm(coordinates - np.array([coord[0], coord[1], coord[2]]))
-            my_index =  np.argmin(distances)
-            
-            # cost = euclidean_distance_3d(coord, coordinates[neighbor_index])
-            try:
-                adjacency_1[my_index,neighbor_index] = 1#cost
-                adjacency_1[neighbor_index,my_index] = 1#cost
-                #print("DAME PAEIS POU ", my_index , " DAME ", neighbor_index)
-            except:
-                pass
-
-    return adjacency_1
-
-def check_point_inside_cuboid(vertices, point):
-    DT = Delaunay(vertices)
+#     if DT.find_simplex(point) >= 0:
+#         return True
+#     return False
+def check_point_inside_cuboid( point):
+    global DT
+    
 
     if DT.find_simplex(point) >= 0:
         return True
     return False
+
 
 def calculateCircuits(positions, num_of_nodes, TravellingCost):
     UAVs = len(positions)
@@ -202,7 +174,7 @@ def euclidean_distance_3d(p1,p2):
 
 def main():
     # init
-    global grid_resolution, namespace, debug, odom, position, arrived, repeat, scenario
+    global grid_resolution, namespace, debug, odom, position, arrived, repeat,DT
     try:
         namespace = rospy.get_param('namespace') # node_name/argsname
         scenario = rospy.get_param('scenario')
@@ -215,7 +187,7 @@ def main():
         scenario = 'mbs'
         debug = True
         set_tag("[" + namespace.upper() + " PATH SCRIPT]: ")
-    
+		
     rospy.init_node(namespace, anonymous=True)
     rate = rospy.Rate(10)
 
@@ -234,14 +206,15 @@ def main():
     # Get inspection area details
     log_info("Waiting for area details")
     area_details = rospy.wait_for_message("/world_coords/"+namespace, area)
+    ##TO ENSURE THAT THE SPECIFIC NAMESPASE PATH OR NO PATH TAKE THE AREA DETAILS
+    # with open("confirm_area_details.txt", "a") as file:
+    #     file.write(namespace+" path  "+ str(area_details)+"/n")
     xrange = range(int(area_details.minPoint.x + area_details.resolution.data/2), int(area_details.minPoint.x + area_details.size.x * area_details.resolution.data - area_details.resolution.data/2) + int(area_details.resolution.data), int(area_details.resolution.data)) 
     yrange = range(int(area_details.minPoint.y + area_details.resolution.data/2), int(area_details.minPoint.y + area_details.size.y * area_details.resolution.data - area_details.resolution.data/2) + int(area_details.resolution.data), int(area_details.resolution.data)) 
     zrange = range(int(area_details.minPoint.z + area_details.resolution.data/2), int(area_details.minPoint.z + area_details.size.z * area_details.resolution.data - area_details.resolution.data/2) + int(area_details.resolution.data), int(area_details.resolution.data)) 
     # Constructing the graph
     coordinates = np.asarray([(x,y,z) for x in xrange for y in yrange for z in zrange]).astype(float)
-    adjacency_org = constuct_adjacency(area_details.resolution.data, area_details.minPoint.x, area_details.minPoint.y, area_details.minPoint.z, area_details.size.x, area_details.size.y, area_details.size.z, coordinates)
-    # adjacency_org = constuct_adjacency(area_details, coordinates)
-   
+    adjacency_org = construct_adjacency(area_details, coordinates)
 
     # Get Bounding Box Verticies
     bboxes = rospy.wait_for_message("/gcs/bounding_box_vertices/", PointCloud)
@@ -255,11 +228,11 @@ def main():
             counter += 1
     
     log_info("Waiting for traj script")
-    rospy.wait_for_message("/"+namespace+"/arrived_at_target", Bool)
+    rospy.wait_for_message("/"+namespace+"/arrived_at_target", Bool)#en gia na kserei pws o explorer egine merged kai oti to traj script pire ton map  449 
     neighbors = rospy.wait_for_message("/"+namespace+"/nbr_odom_cloud", PointCloud2)
     init_pos = position
     gcs_pos = Point()
-    for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+    for  point in sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True):
         if point[3] == 0:
             gcs_pos.x = point[0]
             gcs_pos.y = point[1]
@@ -292,15 +265,21 @@ def main():
         adjacency = np.copy(adjacency_org)
         valid_dist_indices =  np.asarray(occupied_indicies.data)
         adjacency[:,valid_dist_indices] = 0
+
         log_info("Calculating waypoints")
         targeted_points = np.empty((0,1))
         inspect_points = np.empty((0,1))
-        for index in valid_dist_indices:
-                for box_i in range(0,int(len(bboxes.points)/8)):
-                    if check_point_inside_cuboid(bbox_points[box_i], coordinates[index]):
+        # start_time=time.time()
+        for box_i in range(0,int(len(bboxes.points)/8)):
+         DT = Delaunay(bbox_points[box_i])
+         for index in valid_dist_indices:
+                    if check_point_inside_cuboid(coordinates[index]):
                         targeted_points = np.append(targeted_points, index)
-                        break
-        
+        # elapsed_time = time.time() - start_time
+        # with open("time_after_after.txt", "a") as file:
+        #     file.write(f"Time taken to construct adjacency: {elapsed_time:.4f} seconds\n")
+        # with open("target_points_after.txt", "a") as file:
+        #     file.write(str(targeted_points)+"\n")                  
         targeted_points = targeted_points.astype(int)
         all_norms = np.empty((0,3))
         for target_point in targeted_points:
@@ -335,7 +314,7 @@ def main():
         neighbors = rospy.wait_for_message("/"+namespace+"/nbr_odom_cloud", PointCloud2)
         uav_positions = np.empty((0,3))
         uav_indices = np.array([])
-        for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+        for  point in sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True):
             if point[3] != drone_IDs['gcs']:
                 uav_positions = np.append(uav_positions, [[point[0], point[1], point[2]]], axis=0)
                 uav_indices = np.append(uav_indices, point[3])
@@ -376,7 +355,7 @@ def main():
                         log_info("Setting target to initial point: " + str(init_pos))
                         while not los:
                             target_pub.publish(init_pos)
-                            for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+                            for  point in sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True):
                                 if point[3] == 0:
                                     los = True
                             rate.sleep()
@@ -384,7 +363,7 @@ def main():
                         log_info("Setting target to gcs point: " + str(gcs_pos))
                         while not los:
                             target_pub.publish(gcs_pos)
-                            for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+                            for point in sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True):    
                                 if point[3] == 0:
                                     los = True
                             rate.sleep()
@@ -399,16 +378,16 @@ def main():
             velo_pub.publish(vel_msg)
         count += 1.0
     
-    log_info("Setting target to initial point: " + str(init_pos))
-    while not arrived:
-        target_pub.publish(init_pos)
-        rate.sleep()
-    arrived = False
+    # log_info("Setting target to initial point: " + str(init_pos))
+    # while not arrived:
+    #     target_pub.publish(init_pos)
+    #     rate.sleep()
+    # arrived = False
 
     
-    while not rospy.is_shutdown():
-        log_info("Finished")
-        rate.sleep()
+    # while not rospy.is_shutdown():
+    #     log_info("Finished")
+    #     rate.sleep()
 
 if __name__ == '__main__':
     try:
