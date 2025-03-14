@@ -1,6 +1,6 @@
 ################# Explorer Path Planning Code ################
 __author__ = "Andreas Anastasiou, Angelos Zacharia, Antonis Nikolaides"
-__copyright__ = "Copyright (C) 2023 Kios Center of Excellence"
+__copyright__ = "Copyright (C) 2024 Kios Center of Excellence"
 __version__ = "7.0"
 ##############################################################
 
@@ -34,6 +34,8 @@ grid_resolution = 6
 namespace = "jurong"
 arrived = False
 remaining_time = sys.maxsize
+neighbors = PointCloud2()
+# uav_distance_com=50
 
 drone_IDs = {'gcs':0, 'jurong':1, 'raffles':2, 'sentosa':3, 'changi':4, 'nanyang':5}
 
@@ -137,11 +139,27 @@ def log_info(info):
     if debug:
         rospy.loginfo(TAG + f"{info}")
 
+def neighCallback(msg):
+    global neighbors
+    neighbors = msg
+
 def odomCallback(msg):
     global odom, position
     odom = msg
     position = odom.pose.pose.position
 
+def updateCallback(msg):
+    global flag_pub, position, neighbors
+    for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+        point_message = Point()
+        point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
+        d = euclidean_distance_points(position,point_message)
+        if d>=uav_distance_com:
+            continue
+        else:
+            flag_pub.publish(msg)
+            # print('okUPD')
+            
 def arrivedCallback(msg):
     global arrived
     arrived = msg.data
@@ -173,27 +191,32 @@ def euclidean_distance_3d(p1,p2):
 
 def main():
     # init
-    global grid_resolution, namespace, debug, odom, position, arrived, repeat, remaining_time
+    global grid_resolution, namespace, debug, odom, position, arrived, repeat, remaining_time, flag_pub, neighbors
+    global uav_distance_com
     try:
         namespace = rospy.get_param('namespace') # node_name/argsname
         scenario = rospy.get_param('scenario')
         debug = rospy.get_param('debug')
         grid_resolution = rospy.get_param('grid_resolution')
+        uav_distance_com = rospy.get_param('uav_distance_com')
         set_tag("[" + namespace.upper() + " PATH SCRIPT]: ")
     except Exception as e:
         print(e)
         namespace = "ERROR"
         scenario = 'mbs'
         debug = True
+        uav_distance_com = 1
         set_tag("[" + namespace.upper() + " PATH SCRIPT]: ")
 		
     rospy.init_node(namespace, anonymous=True)
     rate = rospy.Rate(10)
-
+    
     # subscribe to self topics
     rospy.Subscriber("/"+namespace+"/ground_truth/odometry", Odometry, odomCallback)
     rospy.Subscriber("/"+namespace+"/arrived_at_target", Bool, arrivedCallback)
     rospy.Subscriber("/"+namespace+"/mission_duration_remained", Duration, missionTimeCallback)
+
+    rospy.Subscriber('/'+namespace+'/command/update', Bool, updateCallback)
 
     # target point publisher
     target_pub = rospy.Publisher("/"+namespace+"/command/targetPoint", Point, queue_size=1)
@@ -204,16 +227,18 @@ def main():
     # norm pub
     norm_pub = rospy.Publisher("/"+namespace+"/norms", norms, queue_size=1)
 
+    rospy.Subscriber("/"+namespace+"/nbr_odom_cloud", PointCloud2, neighCallback)
+
     # Wait for service to appear
-    log_info("Waiting for ppcom")
-    rospy.wait_for_service('/create_ppcom_topic')
-    # Create a service proxy
-    create_ppcom_topic = rospy.ServiceProxy('/create_ppcom_topic', CreatePPComTopic)
-    # Register the topic with ppcom router
-    if namespace == 'jurong':
-        create_ppcom_topic(namespace, ['raffles'], '/'+namespace+'/command/update', 'std_msgs', 'Bool')
-    else:
-        create_ppcom_topic(namespace, ['jurong'], '/'+namespace+'/command/update', 'std_msgs', 'Bool')
+    # log_info("Waiting for ppcom")
+    # rospy.wait_for_service('/create_ppcom_topic')
+    # # Create a service proxy
+    # create_ppcom_topic = rospy.ServiceProxy('/create_ppcom_topic', CreatePPComTopic)
+    # # Register the topic with ppcom router
+    # if namespace == 'jurong':
+    #     create_ppcom_topic(namespace, ['raffles'], '/'+namespace+'/command/update', 'std_msgs', 'Bool')
+    # else:
+    #     create_ppcom_topic(namespace, ['jurong'], '/'+namespace+'/command/update', 'std_msgs', 'Bool')
 
     # Get Bounding Box Verticies
     bboxes = rospy.wait_for_message("/gcs/bounding_box_vertices/", PointCloud)
@@ -228,7 +253,7 @@ def main():
 
     # Get inspection area details
     log_info("Waiting for area details")
-    area_details = rospy.wait_for_message("/world_coords/"+namespace, area)
+    area_details = rospy.wait_for_message("/world_coords/", area)
     log_info("Construct Adjacency")    
     xrange = range(int(area_details.minPoint.x + area_details.resolution.data/2), int(area_details.minPoint.x + area_details.size.x * area_details.resolution.data - area_details.resolution.data/2) + int(area_details.resolution.data), int(area_details.resolution.data)) 
     yrange = range(int(area_details.minPoint.y + area_details.resolution.data/2), int(area_details.minPoint.y + area_details.size.y * area_details.resolution.data - area_details.resolution.data/2) + int(area_details.resolution.data), int(area_details.resolution.data)) 
@@ -439,16 +464,14 @@ def main():
                 uav_indices = np.append(uav_indices, point[3])
                 #test distance between UAVs
         # print([position.x, position.y, position.z])
-        for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
-            point_message = Point()
-            point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
-            d = euclidean_distance_points(position,point_message)
-            if d<=90 and d>= 50:
-                continue
-            elif d<50 and d<=30:
-                continue
-            else:
-                print('Communication available! Distance:'+str(d))
+        # for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+        #     point_message = Point()
+        #     point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
+        #     d = euclidean_distance_points(position,point_message)
+        #     if d<=90 and d>=50:
+        #         continue
+        #     else:
+        #         print('Communication available! Distance:'+str(d))
             
         pos = 0
         while (pos < len(uav_indices)) and (uav_indices[pos] < drone_IDs[namespace]):
@@ -480,23 +503,23 @@ def main():
                 if remaining_time < 10.0:
                     d_init = euclidean_distance_points(position, init_pos)
                     d_gcs = euclidean_distance_points(position, gcs_pos)
-                    los = False
+                    # los = False #COMMENT LOS LOGIC FOR REMOVING PPCOM
                     if d_init <= d_gcs:
                         log_info("Setting target to initial point: " + str(init_pos))
-                        while not los:
-                            target_pub.publish(init_pos)
-                            for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
-                                if point[3] == 0:
-                                    los = True
-                            rate.sleep()
+                        # while not los:
+                        target_pub.publish(init_pos)
+                        # for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+                        #     if point[3] == 0:
+                                # los = True
+                        # rate.sleep()
                     elif d_gcs < d_init:
                         log_info("Setting target to gcs point: " + str(gcs_pos))
-                        while not los:
-                            target_pub.publish(gcs_pos)
-                            for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
-                                if point[3] == 0:
-                                    los = True
-                            rate.sleep()
+                        # while not los:
+                        target_pub.publish(gcs_pos)
+                        # for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+                        #     if point[3] == 0:
+                                # los = True
+                            # rate.sleep()
                 else:
                     target_pub.publish(point)
                     rate.sleep()
@@ -504,9 +527,8 @@ def main():
             
 
         if count < 2.0:
-            print('YOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO')
             vel_msg = Float32()
-            vel_msg.data = 6 - count
+            vel_msg.data = 4 - count
             velo_pub.publish(vel_msg)
         count += 1
     

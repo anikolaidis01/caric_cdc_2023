@@ -23,7 +23,7 @@ import traceback
 import numba as nb
 import time
 
-maxVel = 4.0
+maxVel = 6.0
 debug = False
 TAG = ""
 odom = Odometry()
@@ -41,7 +41,7 @@ adjacency_final = np.zeros((2,2))
 update=True
 mutex = threading.Lock()
 non_visited_nodes_flag=False
-# uav_distance_com=50
+uav_distance_com=50
 
 #neighbors' offsets starting from same z plane counter-clockwise
 offsets_all = [
@@ -140,7 +140,7 @@ def dijkstra(g, s, t):
         return [s,s]
     
     if (len(np.nonzero(g[s,:])[0]) == 0): 
-        # print("Source " + str(t) + " blocked")
+        print("Source " + str(t) + " blocked")
 
         return [s,s]
     
@@ -241,53 +241,53 @@ def neighCallback(msg):
     global neighbors
     neighbors = msg
 
-def occCallback(msg):
-    global occ_pub, position, neighbors
-    for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
-        point_message = Point()
-        point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
-        d = euclidean_distance_points(position,point_message)
-        if d>=uav_distance_com:
-            continue
-        else:
-            occ_pub.publish(msg)
-            # print('okOCC')
+# def occCallback(msg):
+#     global occ_pub, position, neighbors
+#     for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+#         point_message = Point()
+#         point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
+#         d = euclidean_distance_points(position,point_message)
+#         if d>=uav_distance_com:
+#             continue
+#         else:
+#             occ_pub.publish(msg)
+#             # print('okOCC')
             
-def adjCallback(msg):
-    global adj_pub, position, neighbors
-    for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
-        point_message = Point()
-        point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
-        d = euclidean_distance_points(position,point_message)
-        if d>=uav_distance_com:
-            continue
-        else:
-            adj_pub.publish(msg)
-            # print('okADJ')
+# def adjCallback(msg):
+#     global adj_pub, position, neighbors
+#     for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+#         point_message = Point()
+#         point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
+#         d = euclidean_distance_points(position,point_message)
+#         if d>=uav_distance_com:
+#             continue
+#         else:
+#             adj_pub.publish(msg)
+#             # print('okADJ')
 
-def commandUpdateCallback(msg):
-    global command_update_pub, position, neighbors
-    for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
-        point_message = Point()
-        point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
-        d = euclidean_distance_points(position,point_message)
-        if d>=uav_distance_com:
-            continue
-        else:
-            command_update_pub.publish(msg)
-            # print('okCOMUPD')
+# def commandUpdateCallback(msg):
+#     global command_update_pub, position, neighbors
+#     for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+#         point_message = Point()
+#         point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
+#         d = euclidean_distance_points(position,point_message)
+#         if d>=uav_distance_com:
+#             continue
+#         else:
+#             command_update_pub.publish(msg)
+#             # print('okCOMUPD')
 
-def updateCallback(msg):
-    global flag_pub, position, neighbors
-    for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
-        point_message = Point()
-        point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
-        d = euclidean_distance_points(position,point_message)
-        if d>=uav_distance_com:
-            continue
-        else:
-            flag_pub.publish(msg)
-            # print('okUPD')
+# def updateCallback(msg):
+#     global flag_pub, position, neighbors
+#     for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+#         point_message = Point()
+#         point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
+#         d = euclidean_distance_points(position,point_message)
+#         if d>=uav_distance_com:
+#             continue
+#         else:
+#             flag_pub.publish(msg)
+#             # print('okUPD')
 
 @nb.jit(nopython=True, cache=True, fastmath = True)
 def euclidean_distance_3d(p1,p2):
@@ -438,10 +438,10 @@ def update_from_neighbor(coordinates):
             try:
                 if namespace == 'jurong' :
                     rospy.wait_for_message("/raffles/command/update/", Bool,1) #removed ppcom +namespace
-                    occupancy_coords = rospy.wait_for_message('/raffles/occupancy_coords/', Int16MultiArray, 1) #removed ppcom +namespace
+                    occupancy_coords = rospy.wait_for_message('/raffles/occupancy_coords/'+namespace, Int16MultiArray, 1) #removed ppcom +namespace
                 else:
                     rospy.wait_for_message("/jurong/command/update/", Bool,1) #removed ppcom +namespace
-                    occupancy_coords = rospy.wait_for_message('/jurong/occupancy_coords/', Int16MultiArray, 1) #removed ppcom +namespace
+                    occupancy_coords = rospy.wait_for_message('/jurong/occupancy_coords/'+namespace, Int16MultiArray, 1) #removed ppcom +namespace
             except rospy.exceptions.ROSException as e:
                 log_info("Waiting for neighbor map")
                 point = Point()
@@ -773,22 +773,20 @@ def main():
     # init
     global cmdPub, waypoint, command_thread, update_from_neighbor_thread, coordinates, target, grid_resolution, scenario
     global namespace, debug, adjacency, update, mutex, adjacency_final, area_details, viz_pub, adjacency_neigh
-    global visited_nodes,target_pub,occ_pub, adj_pub, flag_pub, command_update_pub, uav_distance_com
+    global visited_nodes,target_pub,occ_pub, adj_pub, flag_pub, command_update_pub
     try:
         namespace = rospy.get_param('namespace') # node_name/argsname
         scenario = rospy.get_param('scenario')
         debug = rospy.get_param('debug')
-        uav_distance_com = rospy.get_param('uav_distance_com')
         grid_resolution = rospy.get_param('grid_resolution')
         set_tag("[" + namespace.upper() + " TRAJ SCRIPT]: ")
     except Exception as e:
         print(e)
         namespace = "jurong"
         scenario = 'mbs'
-        uav_distance_com = 1
         debug = True
         set_tag("[" + namespace.upper() + " TRAJ SCRIPT]: ")
-    # print("\n\n\n\n"+str(uav_distance_com))
+
     rospy.init_node(namespace, anonymous=True)
 
     # subscribe to self topics
@@ -798,10 +796,10 @@ def main():
     rospy.Subscriber("/"+namespace+"/command/velocity", Float32, veloCallback)
     rospy.Subscriber("/gcs/ground_truth/odometry/", Odometry, gcsPositionCallback)
     #added after removing ppcom
-    rospy.Subscriber('/'+namespace+'/occupancy_coords', Int16MultiArray, occCallback)
-    rospy.Subscriber('/'+namespace+'/adjacency', Int16MultiArray, adjCallback)
-    rospy.Subscriber('/'+namespace+'/command/update_done', Bool, commandUpdateCallback)
-    rospy.Subscriber('/'+namespace+'/command/update', Bool, updateCallback)
+    # rospy.Subscriber('/'+namespace+'/occupancy_coords', Int16MultiArray, occCallback)
+    # rospy.Subscriber('/'+namespace+'/adjacency', Int16MultiArray, adjCallback)
+    # rospy.Subscriber('/'+namespace+'/command/update_done', Bool, commandUpdateCallback)
+    # rospy.Subscriber('/'+namespace+'/command/update', Bool, updateCallback)
     # create command publisher
     cmdPub = rospy.Publisher("/"+namespace+"/command/trajectory", MultiDOFJointTrajectory, queue_size=1)
     # adjacency vis pub
@@ -812,39 +810,39 @@ def main():
     arrival_pub = rospy.Publisher('/'+namespace+'/arrived_at_target', Bool, queue_size=1)
     # target point publisher
     target_pub = rospy.Publisher("/"+namespace+"/command/targetPoint", Point, queue_size=1)
-    # adjacency publisher PPCOM
-    adj_pub = rospy.Publisher("/"+namespace+"/adjacency", Int16MultiArray, queue_size=1)
-    # command update  publisher PPCOM
-    command_update_pub = rospy.Publisher("/"+namespace+"/command/update_done", Bool, queue_size=1)
-    # update  publisher PPCOM
-    flag_pub = rospy.Publisher("/"+namespace+"/command/update", Bool, queue_size=1)
+    # # adjacency publisher PPCOM
+    # adj_pub = rospy.Publisher("/"+namespace+"/adjacency", Int16MultiArray, queue_size=1)
+    # # command update  publisher PPCOM
+    # command_update_pub = rospy.Publisher("/"+namespace+"/command/update_done", Bool, queue_size=1)
+    # # update  publisher PPCOM
+    # flag_pub = rospy.Publisher("/"+namespace+"/command/update", Bool, queue_size=1)
 
     # Get Neighbor Positions
     rospy.Subscriber("/"+namespace+"/nbr_odom_cloud", PointCloud2, neighCallback)
 
     # Create a ppcom publisher
     # Wait for service to appear
-    # log_info("Waiting for ppcom")
-    # try: 
-    #     rospy.wait_for_service('/create_ppcom_topic')
-    #     # Create a service proxy
-    #     create_ppcom_topic = rospy.ServiceProxy('/create_ppcom_topic', CreatePPComTopic)
-    #     # Register the topic with ppcom router
-    #     create_ppcom_topic(namespace, ['all'], '/'+namespace+'/occupancy_coords', 'std_msgs', 'Int16MultiArray')
-    #     create_ppcom_topic(namespace, ['all'], '/'+namespace+'/adjacency', 'std_msgs', 'Int16MultiArray')
-    #     # Register the topic with ppcom router
-    #     if namespace == 'jurong':
-    #         create_ppcom_topic(namespace, ['raffles'], '/'+namespace+'/command/update_done', 'std_msgs', 'Bool')
-    #         create_ppcom_topic(namespace, ['raffles'], '/'+namespace+'/command/update', 'std_msgs', 'Bool')
-    #     else:
-    #         create_ppcom_topic(namespace, ['jurong'], '/'+namespace+'/command/update_done', 'std_msgs', 'Bool')
-    #         create_ppcom_topic(namespace, ['jurong'], '/'+namespace+'/command/update', 'std_msgs', 'Bool')
-    # except e:
-    #     print(e)
-    #     print('Error while using PPCOM')
-    # # Get inspection area details
-    # log_info("Waiting for area details")
-    area_details = rospy.wait_for_message("/world_coords/", area)
+    log_info("Waiting for ppcom")
+    try: 
+        rospy.wait_for_service('/create_ppcom_topic')
+        # Create a service proxy
+        create_ppcom_topic = rospy.ServiceProxy('/create_ppcom_topic', CreatePPComTopic)
+        # Register the topic with ppcom router
+        create_ppcom_topic(namespace, ['all'], '/'+namespace+'/occupancy_coords', 'std_msgs', 'Int16MultiArray')
+        create_ppcom_topic(namespace, ['all'], '/'+namespace+'/adjacency', 'std_msgs', 'Int16MultiArray')
+        # Register the topic with ppcom router
+        if namespace == 'jurong':
+            create_ppcom_topic(namespace, ['raffles'], '/'+namespace+'/command/update_done', 'std_msgs', 'Bool')
+            create_ppcom_topic(namespace, ['raffles'], '/'+namespace+'/command/update', 'std_msgs', 'Bool')
+        else:
+            create_ppcom_topic(namespace, ['jurong'], '/'+namespace+'/command/update_done', 'std_msgs', 'Bool')
+            create_ppcom_topic(namespace, ['jurong'], '/'+namespace+'/command/update', 'std_msgs', 'Bool')
+    except e:
+        print(e)
+        print('Error while using PPCOM')
+    # Get inspection area details
+    log_info("Waiting for area details")
+    area_details = rospy.wait_for_message("/world_coords/"+namespace, area)
 
     xrange = range(int(area_details.minPoint.x + area_details.resolution.data/2), int(area_details.minPoint.x + area_details.size.x * area_details.resolution.data - area_details.resolution.data/2) + int(area_details.resolution.data), int(area_details.resolution.data)) 
     yrange = range(int(area_details.minPoint.y + area_details.resolution.data/2), int(area_details.minPoint.y + area_details.size.y * area_details.resolution.data - area_details.resolution.data/2) + int(area_details.resolution.data), int(area_details.resolution.data)) 

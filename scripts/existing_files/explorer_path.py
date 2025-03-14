@@ -492,7 +492,6 @@ def main():
             
 
         if count < 2.0:
-            print('YOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO')
             vel_msg = Float32()
             vel_msg.data = 6 - count
             velo_pub.publish(vel_msg)

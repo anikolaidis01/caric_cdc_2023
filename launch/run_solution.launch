@@ -2,13 +2,47 @@
 
     <arg name="manual_control" default="false" />
     <arg name="scenario" default="mbs" />
-
+	
+    <arg name="uav_distance_com" default="5" />
+    
     <arg name="grid_resolution" default="6" unless="$(eval arg('scenario') == 'hangar')"/>
     <arg name="grid_resolution" value="5" if="$(eval arg('scenario') == 'hangar')"/>
     
     <!-- Launch the simulator -->
-    <include file="$(find caric_mission)/launch/run_$(arg scenario).launch" />
+    <!--include file="$(find caric_mission)/launch/run_$(arg scenario).launch" /-->
+    <arg name="jurong_start_x" default="0.0" />
+    <arg name="jurong_start_y" default="5.0" />
+    <arg name="raffles_start_x" default="31.0" />
+    <arg name="raffles_start_y" default="0.0" />
+    <arg name="sentosa_start_x" default="58.0" />
+    <arg name="sentosa_start_y" default="-13.0" />
+    <arg name="changi_start_x" default="4.0" />
+    <arg name="changi_start_y" default="4.0" />
+    <arg name="nanyang_start_x" default="-2.0" />
+    <arg name="nanyang_start_y" default="25.0" />
 
+    <!-- Call run_mbs.launch and pass the updated arguments -->
+    <include file="$(find caric_mission)/launch/run_$(arg scenario).launch">
+        <arg name="jurong_start_x" value="$(arg jurong_start_x)" />
+        <arg name="jurong_start_y" value="$(arg jurong_start_y)" />
+        <arg name="raffles_start_x" value="$(arg raffles_start_x)" />
+        <arg name="raffles_start_y" value="$(arg raffles_start_y)" />
+        <arg name="sentosa_start_x" value="$(arg sentosa_start_x)" />
+        <arg name="sentosa_start_y" value="$(arg sentosa_start_y)" />
+        <arg name="changi_start_x" value="$(arg changi_start_x)" />
+        <arg name="changi_start_y" value="$(arg changi_start_y)" />
+        <arg name="nanyang_start_x" value="$(arg nanyang_start_x)" />
+        <arg name="nanyang_start_y" value="$(arg nanyang_start_y)" />
+    </include>
+    
+    <!--include file="$(find caric_mission)/launch/run_experiments.sh" /-->
+    
+     <!-- Launch the viz_time_monitor node -->
+    <node pkg="kios_solution" type="viz_time_monitor.py" name="viz_time_monitor" output="screen">
+        <!-- Optional: Override mission_duration if needed -->
+        <param name="mission_duration" value="500.0" />
+    </node>
+    
     <!-- GCS -->
     <group ns="gcs">
         
@@ -17,7 +51,7 @@
         <param name="namespace" value="$(arg namespace)" />
         <param name="grid_resolution" value="$(arg grid_resolution)" />
         <param name="debug" value="true" />
-
+	<param name="uav_distance_com" value="$(arg uav_distance_com)" />
 	    <node name="gcs_script" pkg="kios_solution" type="gcs.py"  output="screen"/>
     </group>
 
@@ -30,7 +64,7 @@
         <param name="namespace" value="$(arg namespace)" />
         <param name="grid_resolution" value="$(arg grid_resolution)" />
         <param name="debug" value="true" />
-        
+        <param name="uav_distance_com" value="$(arg uav_distance_com)" />
         <node pkg="octomap_server" type="octomap_server_node" name="octomap_server_$(arg namespace)">
 		    <param name="resolution" value="3" />
 		
@@ -62,7 +96,7 @@
 
     <group unless="$(eval arg('scenario') == 'hangar')">
         <group ns="raffles">
-            
+            <param name="uav_distance_com" value="$(arg uav_distance_com)" />
             <arg name="namespace"  default="raffles" />
             <param name="scenario" value="$(arg scenario)" />
             <param name="namespace" value="$(arg namespace)" />
@@ -107,7 +141,8 @@
         <param name="scenario" value="$(arg scenario)" />
         <param name="grid_resolution" value="$(arg grid_resolution)" />
         <param name="debug" value="true" />
-
+	<param name="uav_distance_com" value="$(arg uav_distance_com)" />
+	
         <node name="fov_control" pkg="kios_solution" type="uav_fov.py"  output="screen"/>
         <node name="photographer_trajectory" pkg="kios_solution" type="photographer.py"  output="screen"/>
         <node name="photographer_path" pkg="kios_solution" type="photographer_path.py"  output="screen"/>
@@ -121,7 +156,8 @@
         <param name="scenario" value="$(arg scenario)" />
         <param name="grid_resolution" value="$(arg grid_resolution)" />
         <param name="debug" value="true" />
-
+	<param name="uav_distance_com" value="$(arg uav_distance_com)" />
+	
         <node name="fov_control" pkg="kios_solution" type="uav_fov.py"  output="screen"/>
         <node name="photographer_trajectory" pkg="kios_solution" type="photographer.py"  output="screen"/>
         <node name="photographer_path" pkg="kios_solution" type="photographer_path.py"  output="screen"/>
@@ -135,7 +171,8 @@
             <param name="scenario" value="$(arg scenario)" />
             <param name="grid_resolution" value="$(arg grid_resolution)" />
             <param name="debug" value="true" />
-
+	    <param name="uav_distance_com" value="$(arg uav_distance_com)" />
+	    
             <node name="fov_control" pkg="kios_solution" type="uav_fov.py"  output="screen"/>
             <node name="photographer_trajectory" pkg="kios_solution" type="photographer.py"  output="screen"/>
             <node name="photographer_path" pkg="kios_solution" type="photographer_path.py"  output="screen"/>

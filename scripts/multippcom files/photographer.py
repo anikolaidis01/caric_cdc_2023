@@ -33,7 +33,7 @@ target_yaw = 0.0
 grid_resolution = 6
 namespace = "sentosa"
 adjacency = np.zeros((2,2))
-# uav_distance_com=50
+uav_distance_com=50
 
 offsets_all = [
     (-1,-1,0), (0,-1,0), (1,-1,0), (1,0,0), (1,1,0), (0,1,0), (-1,1,0), (-1,0,0), 
@@ -108,7 +108,7 @@ def dijkstra(g, s, t):
         return [s,s]
     
     if (len(np.nonzero(g[s,:])[0]) == 0): 
-        # print("Source " + str(t) + " blocked")
+        print("Source " + str(t) + " blocked")
         return [s,s]
     
     if (len(np.nonzero(g[:,t])[0]) == 0):
@@ -202,52 +202,52 @@ def neighCallback(msg):
     global neighbors
     neighbors = msg
 
-def occCallback(msg):
-    global occ_pub, position, neighbors
-    for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
-        point_message = Point()
-        point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
-        d = euclidean_distance_points(position,point_message)
-        if d>=uav_distance_com:
-            continue
-        else:
-            occ_pub.publish(msg)
-            # print('okOCC')
+# def occCallback(msg):
+#     global occ_pub, position, neighbors
+#     for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+#         point_message = Point()
+#         point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
+#         d = euclidean_distance_points(position,point_message)
+#         if d>=uav_distance_com:
+#             continue
+#         else:
+#             occ_pub.publish(msg)
+#             # print('okOCC')
             
-def adjCallback(msg):
-    global adj_pub, position, neighbors
-    for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
-        point_message = Point()
-        point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
-        d = euclidean_distance_points(position,point_message)
-        if d>=uav_distance_com:
-            continue
-        else:
-            adj_pub.publish(msg)
-            # print('okADJ')
+# def adjCallback(msg):
+#     global adj_pub, position, neighbors
+#     for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+#         point_message = Point()
+#         point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
+#         d = euclidean_distance_points(position,point_message)
+#         if d>=uav_distance_com:
+#             continue
+#         else:
+#             adj_pub.publish(msg)
+#             # print('okADJ')
 
-def commandUpdateCallback(msg):
-    global command_update_pub, position, neighbors
-    for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
-        point_message = Point()
-        point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
-        d = euclidean_distance_points(position,point_message)
-        if d>=uav_distance_com:
-            continue
-        else:
-            command_update_pub.publish(msg)
-            # print('okCOMUPD')
+# def commandUpdateCallback(msg):
+#     global command_update_pub, position, neighbors
+#     for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+#         point_message = Point()
+#         point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
+#         d = euclidean_distance_points(position,point_message)
+#         if d>=uav_distance_com:
+#             continue
+#         else:
+#             command_update_pub.publish(msg)
+#             # print('okCOMUPD')
 
-def updateCallback(msg):
-    global flag_pub, position, neighbors
-    for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
-        point_message = Point()
-        point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
-        d = euclidean_distance_points(position,point_message)
-        if d>=uav_distance_com:
-            continue
-        else:
-            flag_pub.publish(msg)
+# def updateCallback(msg):
+#     global flag_pub, position, neighbors
+#     for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+#         point_message = Point()
+#         point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
+#         d = euclidean_distance_points(position,point_message)
+#         if d>=uav_distance_com:
+#             continue
+#         else:
+#             flag_pub.publish(msg)
 
 def closest_node_index_1(node, nodes):
     distances = np.linalg.norm(nodes - node, axis=1)
@@ -505,13 +505,12 @@ def euclidean_distance_points(point1,point2):
 def main():
     # init
     global cmdPub, waypoint, command_thread, coordinates, target, grid_resolution, namespace, debug, adjacency, area_details, viz_pub, adjacency_neigh,scenario
-    global occ_pub, adj_pub, flag_pub, command_update_pub, uav_distance_com
+    global occ_pub, adj_pub, flag_pub, command_update_pub
     try:
         namespace = rospy.get_param('namespace') # node_name/argsname
         scenario = rospy.get_param('scenario')
         debug = rospy.get_param('debug')
         grid_resolution = rospy.get_param('grid_resolution')
-        uav_distance_com = rospy.get_param('uav_distance_com')
         set_tag("[" + namespace.upper() + " TRAJ SCRIPT]: ")
         #rospy.loginfo(TAG + namespace)
     except Exception as e:
@@ -519,22 +518,21 @@ def main():
         namespace = "sentosa"
         scenario = 'mbs'
         debug = True
-        uav_distance_com = 1
         set_tag("[" + namespace.upper() + " TRAJ SCRIPT]: ")
 	
     rospy.init_node(namespace, anonymous=True)
     rate = rospy.Rate(10)
-    
+
     # subscribe to self topics
     rospy.Subscriber("/"+namespace+"/ground_truth/odometry", Odometry, odomCallback)
     rospy.Subscriber("/"+namespace+"/command/targetPoint", Point, targetCallback)
     rospy.Subscriber("/"+namespace+"/command/yaw", Float32, yawCallback)
     rospy.Subscriber("/"+namespace+"/command/velocity", Float32, veloCallback)
     #added after removing ppcom
-    rospy.Subscriber('/'+namespace+'/occupancy_coords', Int16MultiArray, occCallback)
-    rospy.Subscriber('/'+namespace+'/adjacency', Int16MultiArray, adjCallback)
-    rospy.Subscriber('/'+namespace+'/command/update_done', Bool, commandUpdateCallback)
-    rospy.Subscriber('/'+namespace+'/command/update', Bool, updateCallback)
+    # rospy.Subscriber('/'+namespace+'/occupancy_coords', Int16MultiArray, occCallback)
+    # rospy.Subscriber('/'+namespace+'/adjacency', Int16MultiArray, adjCallback)
+    # rospy.Subscriber('/'+namespace+'/command/update_done', Bool, commandUpdateCallback)
+    # rospy.Subscriber('/'+namespace+'/command/update', Bool, updateCallback)
     # Get Neighbor Positions
     rospy.Subscriber("/"+namespace+"/nbr_odom_cloud", PointCloud2, neighCallback)  
     
@@ -546,17 +544,17 @@ def main():
     arrival_pub = rospy.Publisher('/'+namespace+'/arrived_at_target', Bool, queue_size=1)
 
     # occupied coordinates publisher
-    occ_pub = rospy.Publisher('/'+namespace+'/occupancy_coords', Int16MultiArray, queue_size=1)
-    # # adjacency publisher PPCOM
-    # adj_pub = rospy.Publisher("/"+namespace+"/adjacency", Int16MultiArray, queue_size=1)
-    # command update  publisher PPCOM
-    command_update_pub = rospy.Publisher("/"+namespace+"/command/update_done", Bool, queue_size=1)
-    # update  publisher PPCOM
-    flag_pub = rospy.Publisher("/"+namespace+"/command/update", Bool, queue_size=1)
+    # occ_pub = rospy.Publisher('/'+namespace+'/occupancy_coords', Int16MultiArray, queue_size=1)
+    # # # adjacency publisher PPCOM
+    # # adj_pub = rospy.Publisher("/"+namespace+"/adjacency", Int16MultiArray, queue_size=1)
+    # # command update  publisher PPCOM
+    # command_update_pub = rospy.Publisher("/"+namespace+"/command/update_done", Bool, queue_size=1)
+    # # update  publisher PPCOM
+    # flag_pub = rospy.Publisher("/"+namespace+"/command/update", Bool, queue_size=1)
 
     # Get inspection area details
     log_info("Waiting for area details")
-    area_details = rospy.wait_for_message("/world_coords/", area)
+    area_details = rospy.wait_for_message("/world_coords/"+namespace, area)
     log_info("Construct Adjacency")    
     xrange = range(int(area_details.minPoint.x + area_details.resolution.data/2), int(area_details.minPoint.x + area_details.size.x * area_details.resolution.data - area_details.resolution.data/2) + int(area_details.resolution.data), int(area_details.resolution.data)) 
     yrange = range(int(area_details.minPoint.y + area_details.resolution.data/2), int(area_details.minPoint.y + area_details.size.y * area_details.resolution.data - area_details.resolution.data/2) + int(area_details.resolution.data), int(area_details.resolution.data)) 
@@ -575,15 +573,15 @@ def main():
     log_info("Waiting for map from explorers")
     while len(occupied_msg.data) == 0:
         try:
-            occupied_msg = rospy.wait_for_message("/jurong/adjacency/", Int16MultiArray, 0.1)
+            occupied_msg = rospy.wait_for_message("/jurong/adjacency/"+namespace, Int16MultiArray, 0.1)
             # log_info("Receivied map from Jurong")
         except rospy.exceptions.ROSException as e:
             try:
-                occupied_msg = rospy.wait_for_message("/raffles/adjacency/", Int16MultiArray, 0.1)
+                occupied_msg = rospy.wait_for_message("/raffles/adjacency/"+namespace, Int16MultiArray, 0.1)
                 # log_info("Receivied map from Raffles")
             except rospy.exceptions.ROSException as e:
                 try:
-                    occupied_msg = rospy.wait_for_message("/gcs/adjacency/", Int16MultiArray, 0.1)
+                    occupied_msg = rospy.wait_for_message("/gcs/adjacency/"+namespace, Int16MultiArray, 0.1)
                     # log_info("Receivied new map from GCS")
                 except rospy.exceptions.ROSException as e:
                     pass
@@ -618,17 +616,17 @@ def main():
 
             new_map = False
             try:
-                occupied_msg = rospy.wait_for_message("/jurong/adjacency/", Int16MultiArray, 0.1)
+                occupied_msg = rospy.wait_for_message("/jurong/adjacency/"+namespace, Int16MultiArray, 0.1)
                 # log_info("Receivied new map from Jurong")
                 new_map = True
             except rospy.exceptions.ROSException as e:
                 try:
-                    occupied_msg = rospy.wait_for_message("/raffles/adjacency/", Int16MultiArray, 0.1)
+                    occupied_msg = rospy.wait_for_message("/raffles/adjacency/"+namespace, Int16MultiArray, 0.1)
                     # log_info("Receivied new map from Raffles")
                     new_map = True
                 except rospy.exceptions.ROSException as e:
                     try:
-                        occupied_msg = rospy.wait_for_message("/gcs/adjacency/", Int16MultiArray, 0.1)
+                        occupied_msg = rospy.wait_for_message("/gcs/adjacency/"+namespace, Int16MultiArray, 0.1)
                         # log_info("Receivied new map from GCS")
                         new_map = True
                     except rospy.exceptions.ROSException as e:
