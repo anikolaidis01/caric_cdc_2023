@@ -1,0 +1,996 @@
+################## Explorer Trajectory Code ##################
+__author__ = "Antonis Nikolaides"
+__copyright__ = "Copyright (C) 2023 KIOS Center of Excellence"
+__version__ = "7.0"
+##############################################################
+
+import rospy
+from std_msgs.msg import Header, Float32, Bool, Int16MultiArray
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import PointCloud2
+import sensor_msgs.point_cloud2
+from trajectory_msgs.msg import MultiDOFJointTrajectory, MultiDOFJointTrajectoryPoint
+from geometry_msgs.msg import Transform, Vector3, Quaternion, Twist, Point
+from kios_solution.msg import area
+from octomap_msgs.srv import BoundingBoxQuery
+from visualization_msgs.msg import MarkerArray, Marker
+from caric_mission.srv import CreatePPComTopic
+import math
+import numpy as np
+import heapq
+import threading
+import traceback
+import numba as nb
+import time
+
+maxVel = 0.5
+debug = False
+TAG = ""
+odom = Odometry()
+target = 0
+neighbors = PointCloud2()
+command_thread = None
+update_from_neighbor_thread = None
+cmdPub = None
+coordinates = None
+target_yaw = 0.0
+grid_resolution = 6
+namespace = "jurong"
+adjacency = np.zeros((2,2))
+adjacency_final = np.zeros((2,2))
+update=True
+mutex = threading.Lock()
+non_visited_nodes_flag=False
+# uav_distance_com=50
+
+#neighbors' offsets starting from same z plane counter-clockwise
+offsets_all = [
+    (-1,-1,0), (0,-1,0), (1,-1,0), (1,0,0), (1,1,0), (0,1,0), (-1,1,0), (-1,0,0), 
+    (-1,-1,1), (0,-1,1), (1,-1,1), (1,0,1), (1,1,1), (0,1,1), (-1,1,1), (-1,0,1),(0,0,1),
+    (-1,-1,-1), (0,-1,-1), (1,-1,-1), (1,0,-1), (1,1,-1), (0,1,-1), (-1,1,-1), (-1,0,-1),(0,0,-1)
+]
+offsets_cross = [
+    (0,-1,0), (1,0,0), (0,1,0), (-1,0,0), (0,0,1), (0,0,-1)
+]
+
+def sci_dijkstra(g, arrival_pub, s, t):
+    if (s==t):
+        # init arrival message
+        arrived_msg = Bool()
+        arrived_msg.data = True
+        arrival_pub.publish(arrived_msg)
+        return [s,s]
+    
+    if (len(np.nonzero(g[s,:])[0]) == 0): 
+        log_info("Source " + str(t) + " blocked")
+        arrived_msg = Bool()
+        arrived_msg.data = True
+        arrival_pub.publish(arrived_msg)
+        return [s,s]
+    
+    if (len(np.nonzero(g[:,t])[0]) == 0):
+        log_info("Target " + str(t) + " not reachable")
+        arrived_msg = Bool()
+        arrived_msg.data = True
+        arrival_pub.publish(arrived_msg)
+        return [s,s]
+
+    graph = csr_matrix(g)
+    _, Pr = shortest_path(csgraph=graph, directed=False, method='D', return_predecessors=True)
+
+    path = [t]   
+    k = t  
+    while Pr[s, k] != -9999:
+        path.append(Pr[s, k])
+        k = Pr[s, k]
+    return path[::-1]
+
+def dijkstra1(g, arrival_pub, s, t):  
+    if (s==t):
+        # init arrival message
+        log_info("Arrived at " + str(t))
+        arrived_msg = Bool()
+        arrived_msg.data = True
+        arrival_pub.publish(arrived_msg)
+        return [s,s]
+    
+    if (len(np.nonzero(g[s,:])[0]) == 0): 
+        log_info("Source " + str(t) + " blocked")
+        arrived_msg = Bool()
+        arrived_msg.data = True
+        arrival_pub.publish(arrived_msg)
+        return [s,s]
+    
+    if (len(np.nonzero(g[:,t])[0]) == 0):
+        log_info("Target " + str(t) + " not reachable")
+        arrived_msg = Bool()
+        arrived_msg.data = True
+        # arrival_pub.publish(arrived_msg)
+        return [s,s]
+    
+    q = []
+    d = {n: float('inf') for n in range(len(g))}
+    p = {}
+
+    d[s] = 0
+    heapq.heappush(q, (0, s))
+
+    last_w, curr_v = heapq.heappop(q)
+
+    while  curr_v != t:
+
+        neighbor_indices = np.nonzero(g[curr_v,:])
+        for n in neighbor_indices[0]:
+            n_w = g[curr_v,n]
+
+            cand_w = last_w + n_w # equivalent to d[curr_v] + n_w 
+            if cand_w < d[n]:
+                d[n] = cand_w
+                p[n] = curr_v
+                heapq.heappush(q, (cand_w, n))
+        last_w, curr_v = heapq.heappop(q)  
+
+    return generate_path(p, s, t)
+
+@nb.jit(nopython=True, cache=True, fastmath = True)
+def dijkstra(g, s, t):  
+    global namespace
+    if (s==t):
+        # print(""+namespace+"| Arrived at " + str(t))
+        return [s,s]
+    
+    if (len(np.nonzero(g[s,:])[0]) == 0): 
+        # print("Source " + str(t) + " blocked")
+
+        return [s,s]
+    
+    if (len(np.nonzero(g[:,t])[0]) == 0):
+        print("Target " + str(t) + " not reachable")
+        return [s,s]
+    
+    # q = []
+    # d = []#np.asarray(1000000)
+    d = np.ones(len(g))*9999
+    p = {}
+
+    #heapq.heappush(q, (0, s))
+    q_w = np.array([0])
+    q_v = np.array([s])
+    #last_w, curr_v = heapq.heappop(q)
+    ind = np.argmin(q_w)
+    last_w = q_w[ind]
+    curr_v = q_v[ind]
+    q_w = np.delete(q_w,ind)
+    q_v = np.delete(q_v,ind)
+    while  curr_v != t:
+
+        neighbor_indices = np.nonzero(g[curr_v,:])
+        for n in neighbor_indices[0]:
+            n_w = g[curr_v,n]
+
+            cand_w = int(np.add(last_w, n_w)) # equivalent to d[curr_v] + n_w 
+            if cand_w < d[n]:
+                d[n] = cand_w
+                p[n] = curr_v
+                q_w = np.append(q_w, cand_w)
+                q_v = np.append(q_v, [n])
+                #heapq.heappush(q, ((last_w + n_w), n)) 
+        # last_w, curr_v = heapq.heappop(q)  
+        ind = np.argmin(q_w)
+        last_w = q_w[ind]
+        curr_v = q_v[ind]
+        q_w = np.delete(q_w,ind)
+        q_v = np.delete(q_v,ind)
+
+    path = [t]
+    while True:
+        key = p[path[0]]
+        path.insert(0, key)
+        if key == s:
+            break
+    # print(path)
+    return path
+    #return generate_path(p, s, t)
+
+def generate_path(parents, start, end):
+        path = [end]
+        while True:
+            key = parents[path[0]]
+            path.insert(0, key)
+            if key == start:
+                break
+        return path
+
+def set_tag(tag):
+    global TAG
+    TAG = tag
+
+def log_info(info):
+    global TAG, debug
+    if debug:
+        rospy.loginfo(TAG + f"{info}")
+        publish_text_viz(TAG + f"{info}")
+        
+def odomCallback(msg):
+    global odom, position
+    odom = msg
+    position = odom.pose.pose.position
+
+def targetCallback(msg):
+    global target, coordinates
+    target_point = msg
+    try:
+        target =  closest_node_index((target_point.x,target_point.y,target_point.z),coordinates)
+    except:
+        pass
+
+def gcsPositionCallback(msg):
+    global gcs_point_x,gcs_point_y
+    gcs_point_x = msg.pose.pose.position.x
+    gcs_point_y = msg.pose.pose.position.y
+
+def yawCallback(msg):
+    global target_yaw
+    target_yaw = msg.data
+
+def veloCallback(msg):
+    global maxVel
+    maxVel = msg.data
+
+def neighCallback(msg):
+    global neighbors
+    neighbors = msg
+
+def occCallback(msg):
+    global occ_pub, position, neighbors
+    for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+        point_message = Point()
+        point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
+        d = euclidean_distance_points(position,point_message)
+        if d>=uav_distance_com:
+            continue
+        else:
+            occ_pub.publish(msg)
+            # print('okOCC')
+            
+def adjCallback(msg):
+    global adj_pub, position, neighbors
+    for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+        point_message = Point()
+        point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
+        d = euclidean_distance_points(position,point_message)
+        if d>=uav_distance_com:
+            continue
+        else:
+            adj_pub.publish(msg)
+            # print('okADJ')
+
+def commandUpdateCallback(msg):
+    global command_update_pub, position, neighbors
+    for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+        point_message = Point()
+        point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
+        d = euclidean_distance_points(position,point_message)
+        if d>=uav_distance_com:
+            continue
+        else:
+            command_update_pub.publish(msg)
+            # print('okCOMUPD')
+
+def updateCallback(msg):
+    global flag_pub, position, neighbors
+    for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+        point_message = Point()
+        point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
+        d = euclidean_distance_points(position,point_message)
+        if d>=uav_distance_com:
+            continue
+        else:
+            flag_pub.publish(msg)
+            # print('okUPD')
+
+@nb.jit(nopython=True, cache=True, fastmath = True)
+def euclidean_distance_3d(p1,p2):
+    return math.sqrt( math.pow(p1[0]-p2[0],2) + math.pow(p1[1]-p2[1],2) + math.pow(p1[2]-p2[2],2))
+
+# @nb.jit(nopython=True, cache=True)
+# def constuct_adjacency(data, x, y, z, size_x, size_y, size_z, coordinates):
+#     offsets_cross = [(0,-1,0), (1,0,0), (0,1,0), (-1,0,0), (0,0,1), (0,0,-1)]
+#     num_of_nodes = len(coordinates)
+#     adjacency_1 = np.zeros((num_of_nodes,num_of_nodes))
+#     # log_info("Starting Adjacency calculation. Please wait... ")
+#     for _,coord in enumerate(coordinates):
+#         for _, offset in enumerate(offsets_cross):
+#             neighbor_x = coord[0]+(offset[0] * data)
+#             neighbor_y = coord[1]+(offset[1] * data)
+#             neighbor_z = coord[2]+(offset[2] * data)
+           
+            
+#             gone_too_far_x = (neighbor_x < x) or (neighbor_x > (x + size_x*data))
+#             gone_too_far_y = (neighbor_y < y) or (neighbor_y > (y + size_y*data))
+#             gone_too_far_z = (neighbor_z < z) or (neighbor_z > (z + size_z*data))
+#             if gone_too_far_x or gone_too_far_y or gone_too_far_z:
+#                 continue
+            
+            
+#             # neighbor_index = closest_node_index_1((neighbor_x, neighbor_y, neighbor_z),coordinates)
+#             distances = np.empty(coordinates.shape[0], dtype=coordinates.dtype)
+#             for i in nb.prange(coordinates.shape[0]):
+#                 distances[i] = np.sqrt((coordinates[i, 0]-neighbor_x)*(coordinates[i, 0]-neighbor_x) + (coordinates[i, 1]-neighbor_y)*(coordinates[i, 1]-neighbor_y) + (coordinates[i, 2]-neighbor_z)*(coordinates[i, 2]-neighbor_z))
+                
+#             #distances = np.linalg.norm(coordinates - np.array([neighbor_x, neighbor_y, neighbor_z]))
+#             neighbor_index =  np.argmin(distances)
+
+#             # my_index = closest_node_index_1((coord[0], coord[1], coord[2]),coordinates)
+#             distances = np.empty(coordinates.shape[0], dtype=coordinates.dtype)
+#             for i in nb.prange(coordinates.shape[0]):
+#                 distances[i] = np.sqrt((coordinates[i, 0]-coord[0]) *(coordinates[i, 0]-coord[0]) + (coordinates[i, 1]-coord[1]) *(coordinates[i, 1]-coord[1]) + (coordinates[i, 2]-coord[2]) *(coordinates[i, 2]-coord[2]))
+#             #distances = np.linalg.norm(coordinates - np.array([coord[0], coord[1], coord[2]]))
+#             my_index =  np.argmin(distances)
+            
+#             # cost = euclidean_distance_3d(coord, coordinates[neighbor_index])
+#             try:
+#                 adjacency_1[my_index,neighbor_index] = 1#cost
+#                 adjacency_1[neighbor_index,my_index] = 1#cost
+#                 #print("DAME PAEIS POU ", my_index , " DAME ", neighbor_index)
+#             except:
+#                 pass
+
+#     return adjacency_1
+
+@nb.jit(nopython=True, cache=True, fastmath=True)
+def construct_adjacency(data, x, y, z, size_x, size_y, size_z, coordinates):
+    """
+    Constructs a 3D grid adjacency matrix, handling float inputs gracefully.
+
+    This function builds a graph representation where nodes are points in a 3D grid
+    and edges exist between adjacent points. This version explicitly casts the
+    input size variables to integers to prevent Numba TypingErrors.
+
+    Args:
+        data (float): The step size between grid points (e.g., cell size).
+        x (float): The starting x-coordinate of the grid.
+        y (float): The starting y-coordinate of the grid.
+        z (float): The starting z-coordinate of the grid.
+        size_x (float): Number of grid cells in the x-dimension. (Will be cast to int)
+        size_y (float): Number of grid cells in the y-dimension. (Will be cast to int)
+        size_z (float): Number of grid cells in the z-dimension. (Will be cast to int)
+        coordinates (np.array): A 2D array of shape (N, 3) containing the
+                                (x, y, z) coordinates of all nodes.
+
+    Returns:
+        np.array: A square adjacency matrix of shape (N, N), where a value of 1
+                  indicates an edge between two nodes.
+    """
+    
+    # ---------------------------------------------------------------------
+    # CRITICAL FIX: Explicitly cast input size variables to integers.
+    # This prevents the TypeError when creating the numpy array.
+    size_x_int = int(size_x)
+    size_y_int = int(size_y)
+    size_z_int = int(size_z)
+
+    # Calculate the total number of nodes based on the integer dimensions.
+    num_x_nodes = size_x_int + 1
+    num_y_nodes = size_y_int + 1
+    num_z_nodes = size_z_int + 1
+    num_of_nodes = num_x_nodes * num_y_nodes * num_z_nodes
+
+    # Initialize the adjacency matrix with zeros. The shape tuple now contains
+    # guaranteed integers, resolving the `TypingError`.
+    adjacency_matrix = np.zeros((num_of_nodes, num_of_nodes), dtype=np.int8)
+
+    # Offsets for the six direct neighbors in terms of grid indices.
+    offsets = [
+        (0, 0, 1), (0, 0, -1),  # Z direction (up/down)
+        (0, 1, 0), (0, -1, 0),  # Y direction (forward/backward)
+        (1, 0, 0), (-1, 0, 0)   # X direction (left/right)
+    ]
+
+    # Use a parallelized loop to iterate through each grid cell index.
+    for k in nb.prange(num_z_nodes):
+        for j in range(num_y_nodes):
+            for i in range(num_x_nodes):
+                
+                # Calculate the 1D index of the current node from its 3D integer indices.
+                my_index = i + j * num_x_nodes + k * num_x_nodes * num_y_nodes
+                
+                # Iterate through the six possible neighbors using integer offsets.
+                for offset_x, offset_y, offset_z in offsets:
+                    neighbor_i = i + offset_x
+                    neighbor_j = j + offset_y
+                    neighbor_k = k + offset_z
+
+                    # Check if the neighbor's indices are within the valid bounds.
+                    if 0 <= neighbor_i < num_x_nodes and \
+                       0 <= neighbor_j < num_y_nodes and \
+                       0 <= neighbor_k < num_z_nodes:
+                        
+                        # Calculate the 1D index of the neighbor.
+                        neighbor_index = neighbor_i + neighbor_j * num_x_nodes + neighbor_k * num_x_nodes * num_y_nodes
+                        
+                        # Set the adjacency matrix values.
+                        if my_index < num_of_nodes and neighbor_index < num_of_nodes:
+                            adjacency_matrix[my_index, neighbor_index] = 1
+
+    return adjacency_matrix
+
+def update_adjacency(adjacency, coordinates, obstacle_coordinates):    
+    global grid_resolution
+    adjacency_temp = np.copy(adjacency)
+    # Add octomap voxel centers as obstacles in graph
+    inds = np.empty((0))
+    for obstacle in obstacle_coordinates:
+        index = closest_node_index_1((obstacle[0], obstacle[1], obstacle[2]), coordinates)
+        inds = np.append(inds, [index], axis=0)
+
+    inds = inds.astype(int)
+    adjacency_temp[:,inds] = 0
+    
+    adjacency_neigh = update_adjacency_with_neighbors(adjacency_temp)
+
+    return adjacency_temp, adjacency_neigh
+
+def update_adjacency_with_neighbors(adjacency):
+    global neighbors, grid_resolution, coordinates, area_details
+
+    # add LOS neighbors as obstacles in graph
+    adjacency_temp = np.copy(adjacency)
+
+    for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+        if point[3] != 0 and point[2] >= 1:
+            index = closest_node_index_1((point[0], point[1], point[2]), coordinates)
+            adjacency_temp[:,index]=0
+            for _, offset in enumerate(offsets_cross):
+                neighbor_x = coordinates[index][0]+(offset[0] * grid_resolution)
+                neighbor_y = coordinates[index][1]+(offset[1] * grid_resolution)
+                neighbor_z = coordinates[index][2]+(offset[2] * grid_resolution)
+            
+                gone_too_far_x = (neighbor_x < area_details.minPoint.x) or (neighbor_x > (area_details.minPoint.x + area_details.size.x*area_details.resolution.data))
+                gone_too_far_y = (neighbor_y < area_details.minPoint.y) or (neighbor_y > (area_details.minPoint.y + area_details.size.y*area_details.resolution.data))
+                gone_too_far_z = (neighbor_z < area_details.minPoint.z) or (neighbor_z > (area_details.minPoint.z + area_details.size.z*area_details.resolution.data))
+                if gone_too_far_x or gone_too_far_y or gone_too_far_z:
+                    continue
+              
+                neighbor_index = closest_node_index_1((neighbor_x, neighbor_y, neighbor_z),coordinates)
+                adjacency_temp[:,neighbor_index]=0
+
+    # mark isolated nodes as obstacles in graph
+    arr = np.sum(adjacency_temp, axis=1)
+    isolated_indicies = np.where(arr <= 2)[0]
+    for _, index in enumerate(isolated_indicies):
+        adjacency_temp[:,index] = 0
+
+    return adjacency_temp
+
+def update_from_neighbor(coordinates):
+    global adjacency, update, namespace, mutex, adjacency_final, scenario,target,target_pub, gcs_point_x, gcs_point_y
+    log_info("waiting for update command")
+    flag_pub = rospy.Publisher("/"+namespace+"/command/update_done", Bool, queue_size=1, latch=True)
+    flag_pub2 = rospy.Publisher("/"+namespace+"/command/update", Bool, queue_size=1, latch=True)
+    adj_pub = rospy.Publisher("/"+namespace+"/adjacency", Int16MultiArray, queue_size=1, latch=True)
+    occ_pub = rospy.Publisher("/"+namespace+"/occupancy_coords", Int16MultiArray, queue_size=1, latch=True)
+    bool_msg = Bool()
+    bool_msg.data = True
+
+    rospy.wait_for_message("/"+namespace+"/command/update", Bool)
+    rate = rospy.Rate(1)
+   
+    if scenario != 'hangar':
+        occupancy_coords = Int16MultiArray()
+        log_info("Waiting for neighbor map")
+        while len(occupancy_coords.data) == 0:
+            try:
+                if namespace == 'jurong' :
+                    rospy.wait_for_message("/raffles/command/update/", Bool,1) #removed ppcom +namespace
+                    occupancy_coords = rospy.wait_for_message('/raffles/occupancy_coords/', Int16MultiArray, 1) #removed ppcom +namespace
+                else:
+                    rospy.wait_for_message("/jurong/command/update/", Bool,1) #removed ppcom +namespace
+                    occupancy_coords = rospy.wait_for_message('/jurong/occupancy_coords/', Int16MultiArray, 1) #removed ppcom +namespace
+            except rospy.exceptions.ROSException as e:
+                log_info("Waiting for neighbor map")
+                # point = Point()
+                # if namespace == 'jurong' :
+                #     point.x=gcs_point_x
+                #     point.y=gcs_point_y
+                #     point.z=10
+                # elif namespace == 'raffles' :
+                #     point.x=gcs_point_x
+                #     point.y=gcs_point_y
+                #     point.z=12
+                # target_pub.publish(point)
+            rate.sleep()  
+        flag_pub.publish(bool_msg)
+        flag_pub2.publish(bool_msg)
+        log_info("Acquiring mutex")
+        mutex.acquire()
+        update = False
+        flag_pub2.publish(bool_msg)
+        log_info("Merging map")
+        flag_pub2.publish(bool_msg)
+        # occupancy_coords = enumerate(sensor_msgs.point_cloud2.read_points(occupancy_coords, skip_nans=True, field_names=['x','y','z']))
+        # adjacency_final, _ = update_adjacency(adjacency, coordinates, occupancy_coords)
+        occupied_indicies = np.asarray(occupancy_coords.data)
+        adjacency[:,occupied_indicies] = 0
+        flag_pub2.publish(bool_msg)
+        clear_agent_box(6, namespace)
+        occupancy_coords = rospy.wait_for_message('/'+namespace+'/octomap_point_cloud_centers', PointCloud2)
+        flag_pub2.publish(bool_msg)
+        occupancy_coords = sensor_msgs.point_cloud2.read_points(occupancy_coords, skip_nans=True, field_names=['x','y','z'])
+        adjacency_final, _ = update_adjacency(adjacency, coordinates, occupancy_coords)
+        flag_pub2.publish(bool_msg)
+        mutex.release()
+        log_info("Merging DONE")
+    else:
+        flag_pub2.publish(bool_msg)
+        log_info("Acquiring mutex")
+        mutex.acquire()
+        update = False
+        log_info("Final map update")
+        clear_agent_box(6, namespace)
+        occupancy_coords = rospy.wait_for_message('/'+namespace+'/octomap_point_cloud_centers', PointCloud2)
+        occupancy_coords = sensor_msgs.point_cloud2.read_points(occupancy_coords, skip_nans=True, field_names=['x','y','z'])
+        adjacency_final, _ = update_adjacency(adjacency, coordinates, occupancy_coords)
+        mutex.release()
+        log_info("Final map update DONE")
+
+    # filename = "./"+namespace+"_adjacency.csv"
+    # np.savetxt(filename, adjacency_final, delimiter=",")
+
+    arr = np.sum(adjacency_final, axis=0)
+    occupied_msg = Int16MultiArray()
+    occupied_msg.data = np.where(arr == 0)[0].astype(int)
+
+    while not rospy.is_shutdown():
+        clear_agent_box(6, namespace)
+        flag_pub.publish(bool_msg)
+        flag_pub2.publish(bool_msg)
+        adj_pub.publish(occupied_msg)
+        occ_pub.publish(occupied_msg)
+        arr = np.sum(adjacency_final, axis=0)
+        occupied_msg = Int16MultiArray()
+        occupied_msg.data = np.where(arr == 0)[0].astype(int)
+        publish_graph_viz(coordinates, adjacency_neigh)
+        rate.sleep
+
+def closest_node_index_1(node, nodes):
+    distances = np.linalg.norm(nodes - node, axis=1)
+    return np.argmin(distances)
+
+def closest_node_index(node, nodes):
+    global adjacency_neigh
+    arr = np.sum(adjacency_neigh, axis=0)
+    valid_dist_indices = np.nonzero(arr)[0]
+    distances = np.linalg.norm(nodes[valid_dist_indices] - node, axis=1)
+    # nodes = np.asarray(nodes)
+    # deltas = nodes[valid_dist_indices] - node
+    # dist_2 = np.einsum('ij,ij->i', deltas, deltas)
+    
+    return valid_dist_indices[np.argmin(distances)]#valid_dist_indices[np.argmin(dist_2)]
+
+def clear_agent_box(size, namespace):
+    global odom, neighbors
+    clear_bbox = rospy.ServiceProxy('/'+namespace+'/octomap_server_'+namespace+'/clear_bbx', BoundingBoxQuery)
+    min = Point()
+    max = Point()
+    min.x = odom.pose.pose.position.x - size/4
+    min.y = odom.pose.pose.position.y - size/4
+    min.z = odom.pose.pose.position.z - size/4
+    max.x = odom.pose.pose.position.x + size/4
+    max.y = odom.pose.pose.position.y + size/4
+    max.z = odom.pose.pose.position.z + size/4
+    clear_bbox(max=max, min=min)
+
+    for point in sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True):
+        min.x = point[0] - size/4
+        min.y = point[1] - size/4
+        min.z = point[2] - size/4
+        max.x = point[0] + size/4
+        max.y = point[1] + size/4
+        max.z = point[2] + size/4
+        clear_bbox(max=max, min=min)
+
+# @nb.jit(nopython=True, cache=True, fastmath = True)
+def go_to_point():
+    global cmd_pub, odom, waypoint, target_yaw, maxVel
+    rate = rospy.Rate(10)
+    while not rospy.is_shutdown():
+        #print(waypoint)
+        if waypoint[0] != -3000:
+            header_msg = Header()
+            header_msg.frame_id = 'world'
+            trajset_msg = MultiDOFJointTrajectory()
+            trajpt_msg = MultiDOFJointTrajectoryPoint()
+            transform_msgs = Transform()
+            translation_msg = Vector3()
+            rotation_msg = Quaternion()
+            zero_vector_msg = Vector3()
+            velocities_msg = Twist()
+            acceleration_msg = Twist()
+    
+            if maxVel == 0.0:
+                translation_msg.x = waypoint[0]
+                translation_msg.y = waypoint[1]
+                translation_msg.z = waypoint[2]
+                velocities_msg.linear.x = 0.0#max(min((waypoint[0]-odom.pose.pose.position.x) * 1.0,maxVel), -maxVel)
+                velocities_msg.linear.y = 0.0#max(min((waypoint[1]-odom.pose.pose.position.y) * 1.0,maxVel), -maxVel)
+                velocities_msg.linear.z = 0.0#max(min((waypoint[2]-odom.pose.pose.position.z) * 1.0,2.0), -2.0)
+            else:
+                translation_msg.x = 0.0
+                translation_msg.y = 0.0
+                translation_msg.z = 0.0
+                velocities_msg.linear.x = max(min((waypoint[0]-odom.pose.pose.position.x) * 1.0,maxVel), -maxVel)
+                velocities_msg.linear.y = max(min((waypoint[1]-odom.pose.pose.position.y) * 1.0,maxVel), -maxVel)
+                velocities_msg.linear.z = max(min((waypoint[2]-odom.pose.pose.position.z) * 1.0,maxVel), -maxVel)
+
+            rotation_msg.x = 0.0
+            rotation_msg.y = 0.0
+            rotation_msg.z = np.sin(target_yaw/2.0)
+            rotation_msg.w = np.cos(target_yaw/2.0)
+
+            #velocities_msg.linear = zero_vector_msg
+            #q = odom.pose.pose.orientation
+            #agent_yaw = np.degrees(np.arctan2(2.0 * (q.y * q.z + q.w *q.x), q.w * q.w - q.x * q.x - q.y * q.y + q.z * q.z))
+
+            velocities_msg.angular.x = 0.0
+            velocities_msg.angular.y = 0.0
+            velocities_msg.angular.z = 0.0#max(min((target_yaw - agent_yaw) * 0.5, 5.0), -5.0)
+            
+            acceleration_msg.linear.x = 0.0
+            acceleration_msg.linear.y = 0.0
+            acceleration_msg.linear.z = 0.0
+
+            acceleration_msg.angular.x = 0.0
+            acceleration_msg.angular.y = 0.0
+            acceleration_msg.angular.z = 0.0
+            
+            transform_msgs.translation = translation_msg
+            transform_msgs.rotation = rotation_msg
+            
+            trajpt_msg.transforms.append(transform_msgs)
+            trajpt_msg.velocities.append(velocities_msg)
+            trajpt_msg.accelerations.append(acceleration_msg)
+            
+            trajset_msg.points.append(trajpt_msg)
+            
+            header_msg.stamp = rospy.Time.now()
+            trajset_msg.header = header_msg
+
+            cmdPub.publish(trajset_msg)
+        rate.sleep()
+
+def publish_text_viz(msg):
+    viz_pub = rospy.Publisher("/"+namespace+"/text_viz", Marker, queue_size=1)
+    marker = Marker()
+    marker.header.frame_id = "world"
+    marker.type = marker.TEXT_VIEW_FACING
+    marker.text = msg
+    marker.action = marker.ADD
+    marker.scale.x = 3.0
+    marker.scale.y = 3.0
+    marker.scale.z = 3.0
+    marker.color.a = 1.0
+    marker.color.r = 0.0
+    if namespace == "jurong":
+        marker.color.g = 0.0
+        marker.color.b = 1.0
+        marker.pose.position.y = -50.0
+    else:
+        marker.color.g = 1.0
+        marker.color.b = 0.0
+        marker.pose.position.y = -57.0
+    marker.pose.orientation.w = 1.0
+    marker.pose.position.x = 0.0
+    marker.pose.position.z = 30.0
+    try:
+        viz_pub.publish(marker)
+    except:
+        print('Did not published Text adjacency')
+
+def publish_graph_viz(coords, adj):
+    global namespace, viz_pub, non_visited_nodes_flag
+    marker_array = MarkerArray()
+    # marker_array2 = MarkerArray()
+    temp = np.sum(np.asarray(adj),axis=0)
+    r = np.transpose(np.where(temp==0))
+
+    # print("rrrr:",r)
+
+    # r2 = np.transpose(np.where(temp==1))
+    # print("TEMPPPP :", np.shape(temp))
+    # print("RRRRRRR :", np.shape(r))
+    # for indx, coord in enumerate(coords):
+        # if sum(adj[:,indx]) == 0:
+    for coord_indx in r:
+        marker = Marker()
+        marker.header.frame_id = "world"
+        marker.type = marker.CUBE
+        marker.action = marker.ADD
+        marker.scale.x = grid_resolution
+        marker.scale.y = grid_resolution
+        marker.scale.z = grid_resolution
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 0.0
+        marker.color.a = 0.2
+        marker.pose.orientation.w = 1.0
+        t = coords[coord_indx]
+        # print("COORD INDX :", np.shape(coord_indx))
+        # print("TTTTT :", np.shape(t))
+        marker.pose.position.x = t[0][0]
+        marker.pose.position.y = t[0][1]
+        marker.pose.position.z = t[0][2]
+        marker_array.markers.append(marker)
+        # elif sum(adj[indx,:]) == 0:
+        #     marker = Marker()
+        #     marker.header.frame_id = "world"
+        #     marker.type = marker.CUBE
+        #     marker.action = marker.ADD
+        #     marker.scale.x = grid_resolution
+        #     marker.scale.y = grid_resolution
+        #     marker.scale.z = grid_resolution
+        #     marker.color.r = 1.0
+        #     marker.color.g = 0.0
+        #     marker.color.b = 1.0
+        #     marker.color.a = 0.5
+        #     marker.pose.orientation.w = 1.0
+        #     marker.pose.position.x = coord[0]
+        #     marker.pose.position.y = coord[1]
+        #     marker.pose.position.z = coord[2]
+        #     marker_array.markers.append(marker)
+    if non_visited_nodes_flag:
+        temp1 = np.sum(np.asarray(adj),axis=0)
+        r1 = np.transpose(np.where(temp1!=0))
+        # print('1')
+        for coord_indx in r1:
+            marker = Marker()
+            marker.header.frame_id = "world"
+            marker.type = marker.CUBE
+            marker.action = marker.ADD
+            marker.scale.x = grid_resolution
+            marker.scale.y = grid_resolution
+            marker.scale.z = grid_resolution
+            marker.color.r = 0.0
+            marker.color.g = 1.0
+            marker.color.b = 0.1
+            marker.color.a = 0.2
+            marker.pose.orientation.w = 1.0
+            t = coords[coord_indx]
+            # print("COORD INDX :", np.shape(coord_indx))
+            # print("TTTTT :", np.shape(t))
+            marker.pose.position.x = t[0][0]
+            marker.pose.position.y = t[0][1]
+            marker.pose.position.z = t[0][2]
+            marker_array.markers.append(marker)
+        non_visited_nodes_flag=False
+
+    # marker1 = Marker()
+    # marker1.header.frame_id = "uav_base_link"
+    # # marker1.type = Marker.MESH_RESOURCE
+    # # marker1.mesh_resource = "package://your_pkg/meshes/original_uav.stl"
+    # marker1.scale.x = 4.0  # RViz respects this
+    # marker1.scale.y = 4.0
+    # marker1.scale.z = 4.0
+    # marker_array.markers.append(marker1)
+
+    marker = Marker()
+    marker.header.frame_id = "world"
+    marker.type = marker.SPHERE
+    marker.action = marker.ADD
+    marker.scale.x = grid_resolution/5.0
+    marker.scale.y = grid_resolution/5.0
+    marker.scale.z = grid_resolution/5.0
+    marker.color.a = 1.0
+    marker.color.r = 0.0
+    if namespace == "jurong":
+        marker.color.g = 0.0
+        marker.color.b = 1.0
+    elif namespace == "raffles":
+        marker.color.g = 1.0
+        marker.color.b = 0.0
+    # elif namespace == "nanyang":
+    #     marker.color.g = 0.0
+    #     marker.color.b = 0.0
+        # marker.color.r = 1.0    
+    marker.pose.orientation.w = 1.0
+    marker.pose.position.x = coords[target][0]
+    marker.pose.position.y = coords[target][1]
+    marker.pose.position.z = coords[target][2]
+    marker_array.markers.append(marker)
+
+    id = 0
+    for m in marker_array.markers:
+        m.id = id
+        id += 1
+
+    try:
+        viz_pub.publish(marker_array)
+        # print(marker_array)
+        # print('PUBLISH OK')
+    except Exception as e :
+        print(e)
+        print('Did not published Visual adjacency')
+
+def euclidean_distance_points(point1,point2):
+    p1 = np.zeros((3,1))
+    p1[0] = point1.x
+    p1[1] = point1.y
+    p1[2] = point1.z
+    p2 = np.zeros((3,1))
+    p2[0] = point2.x
+    p2[1] = point2.y
+    p2[2] = point2.z
+    return math.sqrt( math.pow(p1[0]-p2[0],2) + math.pow(p1[1]-p2[1],2) + math.pow(p1[2]-p2[2],2))
+
+def main():
+    # init
+    global cmdPub, waypoint, command_thread, update_from_neighbor_thread, coordinates, target, grid_resolution, scenario
+    global namespace, debug, adjacency, update, mutex, adjacency_final, area_details, viz_pub, adjacency_neigh
+    global visited_nodes,target_pub,occ_pub, adj_pub, flag_pub, command_update_pub, uav_distance_com
+    try:
+        namespace = rospy.get_param('namespace') # node_name/argsname
+        scenario = rospy.get_param('scenario')
+        debug = rospy.get_param('debug')
+        uav_distance_com = rospy.get_param('uav_distance_com')
+        grid_resolution = rospy.get_param('grid_resolution')
+        set_tag("[" + namespace.upper() + " TRAJ SCRIPT]: ")
+    except Exception as e:
+        print(e)
+        namespace = "jurong"
+        scenario = 'mbs'
+        uav_distance_com = 1
+        debug = True
+        set_tag("[" + namespace.upper() + " TRAJ SCRIPT]: ")
+    # print("\n\n\n\n"+str(uav_distance_com))
+    rospy.init_node(namespace, anonymous=True)
+    
+    # subscribe to self topics
+    rospy.Subscriber("/"+namespace+"/ground_truth/odometry", Odometry, odomCallback)
+    rospy.Subscriber("/"+namespace+"/command/targetPoint", Point, targetCallback)
+    rospy.Subscriber("/"+namespace+"/command/yaw", Float32, yawCallback)
+    rospy.Subscriber("/"+namespace+"/command/velocity", Float32, veloCallback)
+    rospy.Subscriber("/gcs/ground_truth/odometry/", Odometry, gcsPositionCallback)
+    #added after removing ppcom
+    rospy.Subscriber('/'+namespace+'/occupancy_coords', Int16MultiArray, occCallback)
+    rospy.Subscriber('/'+namespace+'/adjacency', Int16MultiArray, adjCallback)
+    rospy.Subscriber('/'+namespace+'/command/update_done', Bool, commandUpdateCallback)
+    rospy.Subscriber('/'+namespace+'/command/update', Bool, updateCallback)
+    # create command publisher
+    cmdPub = rospy.Publisher("/"+namespace+"/command/trajectory", MultiDOFJointTrajectory, queue_size=1)
+    # adjacency vis pub
+    viz_pub = rospy.Publisher("/"+namespace+"/adjacency_viz", MarkerArray, queue_size=1,latch=True)
+    # occupied coordinates publisher
+    occ_pub = rospy.Publisher('/'+namespace+'/occupancy_coords', Int16MultiArray, queue_size=1)
+    # occupied coordinates publisher
+    arrival_pub = rospy.Publisher('/'+namespace+'/arrived_at_target', Bool, queue_size=1)
+    # target point publisher
+    target_pub = rospy.Publisher("/"+namespace+"/command/targetPoint", Point, queue_size=1)
+    # adjacency publisher PPCOM
+    adj_pub = rospy.Publisher("/"+namespace+"/adjacency", Int16MultiArray, queue_size=1)
+    # command update  publisher PPCOM
+    command_update_pub = rospy.Publisher("/"+namespace+"/command/update_done", Bool, queue_size=1)
+    # update  publisher PPCOM
+    flag_pub = rospy.Publisher("/"+namespace+"/command/update", Bool, queue_size=1)
+
+    # Get Neighbor Positions
+    rospy.Subscriber("/"+namespace+"/nbr_odom_cloud", PointCloud2, neighCallback)
+
+    # Create a ppcom publisher
+    # Wait for service to appear
+    # log_info("Waiting for ppcom")
+    # try: 
+    #     rospy.wait_for_service('/create_ppcom_topic')
+    #     # Create a service proxy
+    #     create_ppcom_topic = rospy.ServiceProxy('/create_ppcom_topic', CreatePPComTopic)
+    #     # Register the topic with ppcom router
+    #     create_ppcom_topic(namespace, ['all'], '/'+namespace+'/occupancy_coords', 'std_msgs', 'Int16MultiArray')
+    #     create_ppcom_topic(namespace, ['all'], '/'+namespace+'/adjacency', 'std_msgs', 'Int16MultiArray')
+    #     # Register the topic with ppcom router
+    #     if namespace == 'jurong':
+    #         create_ppcom_topic(namespace, ['raffles'], '/'+namespace+'/command/update_done', 'std_msgs', 'Bool')
+    #         create_ppcom_topic(namespace, ['raffles'], '/'+namespace+'/command/update', 'std_msgs', 'Bool')
+    #     else:
+    #         create_ppcom_topic(namespace, ['jurong'], '/'+namespace+'/command/update_done', 'std_msgs', 'Bool')
+    #         create_ppcom_topic(namespace, ['jurong'], '/'+namespace+'/command/update', 'std_msgs', 'Bool')
+    # except e:
+    #     print(e)
+    #     print('Error while using PPCOM')
+    # # Get inspection area details
+    # log_info("Waiting for area details")
+    area_details = rospy.wait_for_message("/world_coords/", area)
+
+    xrange = range(int(area_details.minPoint.x + area_details.resolution.data/2), int(area_details.minPoint.x + area_details.size.x * area_details.resolution.data - area_details.resolution.data/2) + int(area_details.resolution.data), int(area_details.resolution.data)) 
+    yrange = range(int(area_details.minPoint.y + area_details.resolution.data/2), int(area_details.minPoint.y + area_details.size.y * area_details.resolution.data - area_details.resolution.data/2) + int(area_details.resolution.data), int(area_details.resolution.data)) 
+    zrange = range(int(area_details.minPoint.z + area_details.resolution.data/2), int(area_details.minPoint.z + area_details.size.z * area_details.resolution.data - area_details.resolution.data/2) + int(area_details.resolution.data), int(area_details.resolution.data)) 
+
+    # Constructing the graph
+    log_info("Constructing initial graph")
+    
+    coordinates = np.asarray([(x,y,z) for x in xrange for y in yrange for z in zrange])
+    # adjacency_org = constuct_adjacency(area_details, coordinates)
+    # adjacency_org = construct_adjacency(area_details, coordinates)
+    start_time = time.time()
+    adjacency_org = construct_adjacency(area_details.resolution.data, area_details.minPoint.x, area_details.minPoint.y, area_details.minPoint.z, area_details.size.x, area_details.size.y, area_details.size.z, coordinates)
+    end_time = time.time()
+    print(namespace+" | Duration: ",end_time - start_time)     
+    log_info("Waiting for octomap")
+    occupancy_coords = rospy.wait_for_message('/'+namespace+'/octomap_point_cloud_centers', PointCloud2)
+    log_info("translating octomap")
+    occupancy_coords = sensor_msgs.point_cloud2.read_points(occupancy_coords, skip_nans=True, field_names=['x','y','z'])
+    log_info("calling adjacency update")
+    adjacency, adjacency_neigh = update_adjacency(adjacency_org, coordinates, occupancy_coords)
+    log_info("publishing adjacency")
+    # start_time= time.time()
+    publish_graph_viz(coordinates, adjacency)
+
+    
+    # create ros control thread
+    waypoint = (-3000,-3000,-3000)
+    command_thread = threading.Thread(target=go_to_point)
+    command_thread.start()
+
+    # create map merge thread
+    update_from_neighbor_thread = threading.Thread(target=update_from_neighbor, args=(coordinates,))
+    update_from_neighbor_thread.start()
+
+    log_info("Waiting for target point")
+    rospy.wait_for_message("/"+namespace+"/command/targetPoint", Point)
+
+    octomap_length = 0
+    while not rospy.is_shutdown():
+        try:
+            agent_index = closest_node_index_1((odom.pose.pose.position.x,odom.pose.pose.position.y,odom.pose.pose.position.z),coordinates)
+            path = dijkstra(adjacency_neigh, agent_index, target)
+            # if namespace=='raffles':
+            #     print(path)
+            if (len(path)==2):
+                arrived_msg = Bool()
+                arrived_msg.data = True
+                arrival_pub.publish(arrived_msg)
+            waypoint = coordinates[path[1]]
+
+            clear_agent_box(grid_resolution, namespace)
+            occupancy_coords_msg = rospy.wait_for_message('/'+namespace+'/octomap_point_cloud_centers', PointCloud2)
+            occupancy_coords = sensor_msgs.point_cloud2.read_points(occupancy_coords_msg, skip_nans=True, field_names=['x','y','z'])
+            
+            if update:
+                # log_info("Updating map")
+                mutex.acquire()
+                adjacency, adjacency_neigh = update_adjacency(adjacency_org,coordinates, occupancy_coords)
+                mutex.release()
+                arr = np.sum(adjacency, axis=0)
+                # obstacle_indicies = np.where(arr == 0)[0].astype(int)
+                occupied_msg = Int16MultiArray()
+                occupied_msg.data = np.where(arr == 0)[0].astype(int)
+                occ_pub.publish(occupied_msg)
+            else:
+                if abs(octomap_length - occupancy_coords_msg.width) > 20:
+                    mutex.acquire()
+                    # log_info("Updating Map")
+                    # publish_text_viz("Map Updated")
+                    octomap_length = occupancy_coords_msg.width
+                    try:
+                        adjacency_final, adjacency_neigh = update_adjacency(adjacency_final,coordinates, occupancy_coords)
+                        # adjacency_neigh = update_adjacency_with_neighbors(adjacency_final)
+                    except:
+                        pass
+                    finally:
+                        mutex.release()
+                else:
+                    adjacency_neigh = update_adjacency_with_neighbors(adjacency_final)
+                # publish_text_viz("")
+
+        except Exception as e:
+            pass
+        
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("terminating...")
+        command_thread.terminate()
+        update_from_neighbor_thread.terminte()
+    except Exception as e:
+        traceback.print_exc()
+    finally:
+        exit()

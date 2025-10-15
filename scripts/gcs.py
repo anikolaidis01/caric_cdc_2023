@@ -1,0 +1,278 @@
+####################### GCS Logic Code #######################
+__author__ = "Antonis Nikolaides"
+__copyright__ = "Copyright (C) 2023 KIOS Center of Excellence"
+__version__ = "7.0"
+##############################################################
+
+import rospy
+from std_msgs.msg import Int16MultiArray
+from gazebo_msgs.srv import GetModelState
+from sensor_msgs.msg import PointCloud, PointCloud2
+import sensor_msgs.point_cloud2
+from nav_msgs.msg import Odometry
+from caric_mission.srv import CreatePPComTopic
+from kios_solution.msg import area
+import traceback
+import math
+import numpy as np
+from geometry_msgs.msg import Point
+import time
+
+debug = False
+TAG = ""
+grid_res = 6
+odom = Odometry()
+jurongMap = Int16MultiArray()
+jurongTime = 0
+rafflesMap = Int16MultiArray()
+rafflesTime = 0
+neighbors = PointCloud2()
+init_flag = False
+# uav_distance_com = 50
+
+def set_tag(tag):
+    global TAG
+    TAG = tag
+
+def log_info(info):
+    global TAG, debug
+    if debug:
+        rospy.loginfo(TAG + info)
+
+def neighCallback(msg):
+    global neighbors
+    neighbors = msg
+
+def odomCallback(msg):
+    global odom, position
+    odom = msg
+    position = odom.pose.pose.position
+
+def jurongMapCallback(msg):
+    global jurongMap, jurongTime
+    jurongMap = msg
+    jurongTime = rospy.Time.now()
+
+def rafflesMapCallback(msg):
+    global rafflesMap, rafflesTime
+    rafflesMap = msg
+    rafflesTime = rospy.Time.now()
+
+def coordCallback(msg):
+    global msg_pub, position, namespace, init_flag
+    if init_flag==False:
+        msg_pub.publish(msg)
+        init_flag=True
+    neighbors = rospy.wait_for_message("/"+namespace+"/nbr_odom_cloud", PointCloud2)
+    for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+        point_message = Point()
+        point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
+        d = euclidean_distance_points(position,point_message)
+        if d>=uav_distance_com:
+            continue
+        else:
+            msg_pub.publish(msg)
+
+def adjCallback(msg):
+    global adj_pub, position, namespace
+    neighbors = rospy.wait_for_message("/"+namespace+"/nbr_odom_cloud", PointCloud2)
+    for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+        point_message = Point()
+        point_message.x, point_message.y, point_message.z = point[0], point[1], point[2]
+        d = euclidean_distance_points(position,point_message)
+        # print(uav_distance_com)
+        if d>=uav_distance_com:
+            continue
+        else:
+            adj_pub.publish(msg)
+
+def euclidean_distance_points(point1,point2):
+    p1 = np.zeros((3,1))
+    p1[0] = point1.x
+    p1[1] = point1.y
+    p1[2] = point1.z
+    p2 = np.zeros((3,1))
+    p2[0] = point2.x
+    p2[1] = point2.y
+    p2[2] = point2.z
+    return math.sqrt( math.pow(p1[0]-p2[0],2) + math.pow(p1[1]-p2[1],2) + math.pow(p1[2]-p2[2],2))
+
+def process_boxes_numpy(msg):
+    if not msg.points:
+        return [np.inf, -np.inf, np.inf, -np.inf, np.inf, -np.inf]
+
+    # Convert list of Point objects to a NumPy array
+    points_array = np.array([[p.x, p.y, p.z] for p in msg.points], dtype=np.float64)
+
+    minx = np.min(points_array[:, 0])
+    maxx = np.max(points_array[:, 0])
+    miny = np.min(points_array[:, 1])
+    maxy = np.max(points_array[:, 1])
+    minz = np.min(points_array[:, 2])
+    maxz = np.max(points_array[:, 2])
+
+    return [minx, maxx, miny, maxy, minz, maxz]
+
+def find_world_min_max(msg, min_max):
+    minx = min_max[0]
+    miny = min_max[2]
+    minz = min_max[4]
+    maxx = min_max[1]
+    maxy = min_max[3]
+    maxz = min_max[5]
+
+    for point in sensor_msgs.point_cloud2.read_points(msg, skip_nans=True):
+        if minx > point[0]:
+            minx = point[0]
+        if maxx < point[0]:
+            maxx = point[0]
+
+        if miny > point[1]:
+            miny = point[1]
+        if maxy < point[1]:
+            maxy = point[1]
+
+        if minz > point[2]:
+            minz = point[2]
+        if maxz < point[2]:
+            maxz = point[2]
+
+    # Uncomment the following to include GCS in the min max world calculation
+    # if minx > odom.pose.pose.position.x:
+    #     minx = odom.pose.pose.position.x
+    # if maxx < odom.pose.pose.position.x:
+    #     maxx = odom.pose.pose.position.x
+
+    # if miny > odom.pose.pose.position.y:
+    #     miny = odom.pose.pose.position.y
+    # if maxy < odom.pose.pose.position.y:
+    #     maxy = odom.pose.pose.position.y
+
+    # if minz > odom.pose.pose.position.z:
+    #     minz = odom.pose.pose.position.z
+    # if maxz < odom.pose.pose.position.z:
+    #     maxz = odom.pose.pose.position.z
+
+    relax = 5
+    minx = round(minx-relax)
+    maxx = round(maxx+relax)
+    if (abs(minx) + abs(maxx))%grid_res!=0:
+        maxx += grid_res-(abs(minx) + abs(maxx))%grid_res
+
+    miny = round(miny-relax)
+    maxy = round(maxy+relax)
+    if (abs(miny) + abs(maxy))%grid_res!=0:
+            maxy += grid_res-(abs(miny) + abs(maxy))%grid_res
+
+    minz = round(max(2.0,minz-relax))
+    maxz = round(maxz+relax) ##
+    if (abs(minz) + abs(maxz))%grid_res!=0:
+            maxz += grid_res-(abs(minz) + abs(maxz))%grid_res
+    return [minx, maxx, miny, maxy, minz, maxz]
+
+def main():
+    global debug, scenario, jurongMap, jurongTime, rafflesMap, rafflesTime, msg_pub, adj_pub, neighbors, namespace
+    global init_flag, uav_distance_com
+    # init
+    try:
+        namespace = rospy.get_param('namespace')
+        scenario = rospy.get_param('scenario')
+        debug = rospy.get_param('debug')
+        uav_distance_com = rospy.get_param('uav_distance_com')
+        grid_res = rospy.get_param('grid_resolution')
+        set_tag("[" + namespace.upper() + " SCRIPT]: ")
+    except Exception as e:
+        print(e)
+        namespace = "gcs"
+        scenario = 'mbs'
+        uav_distance_com = 5
+        debug = True
+        set_tag("[" + namespace.upper() + " SCRIPT]: ")
+
+    rospy.init_node(namespace, anonymous=True)
+
+    rate = rospy.Rate(1)
+    
+    # wait for gazebo
+    rospy.wait_for_service("/gazebo/get_model_state")
+    get_state = rospy.ServiceProxy('/gazebo/get_model_state', GetModelState)
+    rate.sleep()
+
+    state = get_state(model_name=scenario)
+    while state.status_message != "GetModelState: got properties":
+        if debug:
+            rospy.loginfo("[TESTING FLIGHT SCRIPT: GET STATE]: " + namespace)
+        state = get_state(model_name=namespace)
+        rate.sleep()
+    
+    jurongTime = rospy.Time.now()
+    rafflesTime = rospy.Time.now()
+    # subscribe to self topics
+    rospy.Subscriber("/"+namespace+"/ground_truth/odometry", Odometry, odomCallback)
+    rospy.Subscriber("/jurong/adjacency/", Int16MultiArray, jurongMapCallback)
+    rospy.Subscriber("/raffles/adjacency/", Int16MultiArray, rafflesMapCallback)
+
+    rospy.Subscriber("/world_coords", area, coordCallback)
+    rospy.Subscriber('/'+namespace+'/adjacency', Int16MultiArray, adjCallback)
+    # Create a ppcom publisher
+    # Wait for service to appear
+    # rospy.wait_for_service('/create_ppcom_topic')
+
+    # # Create a service proxy
+    # create_ppcom_topic = rospy.ServiceProxy('/create_ppcom_topic', CreatePPComTopic)
+    # # Register the topic with ppcom router
+    # create_ppcom_topic('gcs', ['all'], '/world_coords', 'kios_solution', 'area')
+    # create_ppcom_topic('gcs', ['all'], "/"+namespace+"/adjacency", 'std_msgs', 'Int16MultiArray')
+    # Create the publisher
+
+    # coords pub
+    msg_pub = rospy.Publisher('/world_coords', area, queue_size=1)
+    # norm pub
+    adj_pub = rospy.Publisher("/"+namespace+"/adjacency", Int16MultiArray, queue_size=1, latch=True)
+
+    rospy.Subscriber("/"+namespace+"/nbr_odom_cloud", PointCloud2, neighCallback)
+
+    # Get Bounding Box Verticies
+    bboxes = rospy.wait_for_message("/gcs/bounding_box_vertices/", PointCloud)
+    # start_time = time.time()
+    min_max = process_boxes_numpy(bboxes)
+
+    # print("Time Difference: ",str(end_time - start_time))
+    # Get Neighbor Positions
+    log_info("Waiting for neighbors positions")
+    neighbors = rospy.wait_for_message("/"+namespace+"/nbr_odom_cloud", PointCloud2)
+
+    # Calculate discretized world
+    log_info("Calculating discretized world size")
+    min_max = find_world_min_max(neighbors, min_max)
+    size_x = (abs(min_max[0]) + abs(min_max[1]))/grid_res
+    size_y = (abs(min_max[2]) + abs(min_max[3]))/grid_res
+    size_z = (abs(min_max[4]) + abs(min_max[5]))/grid_res
+
+    area_msg = area()
+    area_msg.minPoint.x = min_max[0]
+    area_msg.minPoint.y = min_max[2]
+    area_msg.minPoint.z = min_max[4]
+    area_msg.size.x = size_x
+    area_msg.size.y = size_y
+    area_msg.size.z = size_z
+    area_msg.resolution.data = grid_res
+
+    log_info("DONE")
+    while not rospy.is_shutdown():
+        rate.sleep()
+        msg_pub.publish(area_msg)
+        if jurongTime > rafflesTime:
+            adj_pub.publish(jurongMap)
+        else:
+            adj_pub.publish(rafflesMap)
+
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("terminating...")
+    except Exception as e:
+        traceback.print_exc()
+    finally:
+        exit()
