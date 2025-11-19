@@ -20,7 +20,7 @@ import threading
 import traceback
 import numba as nb
 
-maxVel = 3.0
+maxVel = 4.0
 debug = False
 TAG = ""
 odom = Odometry()

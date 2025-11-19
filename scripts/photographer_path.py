@@ -17,6 +17,8 @@ import numpy as np
 import math
 import traceback
 import numba as nb
+import random as rand
+import time 
 
 repeat = True
 debug = False
@@ -33,7 +35,11 @@ arrived = False
 remaining_time = sys.maxsize
 drone_IDs = {'gcs':0, 'jurong':1, 'raffles':2, 'sentosa':3, 'changi':4, 'nanyang':5}
 neighbors = PointCloud2()
-# uav_distance_com=50
+
+AREA_A_CENTER = (-53.0,  43.0, 4.0)
+AREA_A_SIZE   = (8.0,    8.0, 8.0)
+AREA_B_CENTER = (117.0, -57.0, 4.0)
+AREA_B_SIZE   = (8.0,    8.0, 8.0)
 
 offsets_cross = [
     (0,-1,0), (1,0,0), (0,1,0), (-1,0,0), (0,0,1), (0,0,-1)
@@ -217,6 +223,78 @@ def euclidean_distance(p1,point):
 def euclidean_distance_3d(p1,p2):
     return math.sqrt( math.pow(p1[0]-p2[0],2) + math.pow(p1[1]-p2[1],2) + math.pow(p1[2]-p2[2],2))
 
+@nb.njit(cache=True)
+def generate_waypoint_str(center_x, center_y, center_z, size_x, size_y, size_z=0.0):
+    hx = size_x / 2.0
+    hy = size_y / 2.0
+    hz = size_z / 2.0
+
+    min_x, max_x = center_x - hx - 1, center_x + hx - 1
+    min_y, max_y = center_y - hy - 1, center_y + hy - 1
+    min_z, max_z = center_z - hz - 1, center_z + hz - 1
+
+    x = np.random.uniform(min_x, max_x)
+    y = np.random.uniform(min_y, max_y)
+    z = np.random.uniform(min_z, max_z)
+    
+    return x, y, z
+
+# Area boundaries calculation
+@nb.jit(nopython=True, cache=True)
+def compute_area_bounds(center, size):
+    cx, cy, cz = center
+    sx, sy, sz = size
+    hx, hy, hz = sx / 2.0, sy / 2.0, sz / 2.0
+    return (
+        cx - hx, cx + hx,  # min_x, max_x
+        cy - hy, cy + hy,  # min_y, max_y
+        cz - hz, cz + hz   # min_z, max_z
+    )
+
+# Function to check if a point is in a given area
+@nb.jit(nopython=True, cache=True)
+def is_inside_area(pos, bounds):
+    x, y, z = pos
+    xmin, xmax, ymin, ymax, zmin, zmax = bounds
+    return xmin <= x <= xmax and ymin <= y <= ymax and zmin <= z <= zmax
+
+def handle_waypoint_logic(position, arrived, sent_target, namespace, target_pub, rate):
+    if not (arrived and sent_target):
+        return arrived, sent_target  # Early return if we don't need to do anything
+    
+    # time.sleep(1)  # Pause after arriving
+    AREA_A_BOUNDS = compute_area_bounds(AREA_A_CENTER, AREA_A_SIZE)
+    AREA_B_BOUNDS = compute_area_bounds(AREA_B_CENTER, AREA_B_SIZE)
+    arrived = False
+    sent_target = False
+    pos = (position.x, position.y, position.z)
+
+    if is_inside_area(pos, AREA_A_BOUNDS):
+        next_point = generate_waypoint_str(*AREA_B_CENTER, *AREA_B_SIZE)
+        print("Uav " + namespace + " inside area A")
+    elif is_inside_area(pos, AREA_B_BOUNDS):
+        next_point = generate_waypoint_str(*AREA_A_CENTER, *AREA_A_SIZE)
+        print("Uav " + namespace + " inside area B")
+    else:
+        print("Error while finding the UAV position")
+        return arrived, sent_target  # Early return if outside known areas
+
+    target_msg = Point()
+    target_msg.x = next_point[0]
+    target_msg.y = next_point[1]
+    target_msg.z = next_point[2]
+    log_info("Setting target to point: " + str((target_msg.x, target_msg.y, target_msg.z)))
+
+    while not arrived:
+        target_pub.publish(target_msg)
+        rate.sleep()
+
+    # After reaching the point
+    arrived = False
+    sent_target = True
+
+    return arrived, sent_target
+
 def main():
     # init
     global grid_resolution, namespace, debug, odom, position, arrived, repeat, scenario, flag_pub
@@ -291,105 +369,204 @@ def main():
             break
     rate.sleep()
 
+    AREA_A_CENTER = (-53.0,  43.0, 2.0)
+    AREA_A_SIZE   = (8.0,  8.0, 4.0)
+    AREA_B_CENTER = (117.0, -57.0, 2.0)
+    AREA_B_SIZE   = (8.0,   8.0, 4.0)
+    
+    if drone_IDs[namespace] == drone_IDs['sentosa']:
+        wp_b = generate_waypoint_str(*AREA_B_CENTER, *AREA_B_SIZE)  
+        target_points = [wp_b]
+    elif drone_IDs[namespace] == drone_IDs['changi'] or drone_IDs['nanyang']:
+        wp_a = generate_waypoint_str(*AREA_A_CENTER, *AREA_A_SIZE)
+        # print(wp_a)
+        target_points = [wp_a]
+    else:
+        print('U are gay')
+
+        # for waypoint in target_points[pos]:
+        #     point = Point()
+        #     point.x = points[waypoint,0]
+        #     point.y = points[waypoint,1]
+        #     point.z = points[waypoint,2]
+    for point in target_points:
+        target_msg = Point()
+        target_msg.x = point[0]
+        target_msg.y = point[1]
+        target_msg.z = point[2]
+        log_info("Setting target to point: " + str(point))
+        while not arrived:
+            target_pub.publish(target_msg)
+            rate.sleep()
+        arrived = False
+
+    # AREA_A_BOUNDS = compute_area_bounds(AREA_A_CENTER, AREA_A_SIZE)
+    # AREA_B_BOUNDS = compute_area_bounds(AREA_B_CENTER, AREA_B_SIZE)
+
     # Generate and go to TSP points
     count = 0
+    sent_target = True
     while repeat:
         log_info("Waiting for map from explorers")
         occupied_indicies = Int16MultiArray()
-        while len(occupied_indicies.data) == 0:
-            try:
-                occupied_indicies = rospy.wait_for_message("/jurong/adjacency/", Int16MultiArray,0.1)
-                log_info("Receivied map from Jurong")
-            except rospy.exceptions.ROSException as e:
-                try:
-                    occupied_indicies = rospy.wait_for_message("/raffles/adjacency/", Int16MultiArray,0.1)
-                    log_info("Receivied map from Raffles")
-                except rospy.exceptions.ROSException as e:
-                    try:
-                        occupied_indicies = rospy.wait_for_message("/gcs/adjacency/", Int16MultiArray, 0.1)
-                        log_info("Receivied map from GCS")
-                    except rospy.exceptions.ROSException as e:
-                        pass
-                        # log_info("Waiting for map from explorers")
-            rate.sleep() 
-        log_info("Loading map")
-        adjacency = np.copy(adjacency_org)
-        valid_dist_indices =  np.asarray(occupied_indicies.data)
-        adjacency[:,valid_dist_indices] = 0
-        log_info("Calculating waypoints")
-        targeted_points = np.empty((0,1))
-        inspect_points = np.empty((0,1))
-        for index in valid_dist_indices:
-                for box_i in range(0,int(len(bboxes.points)/8)):
-                    if check_point_inside_cuboid(bbox_points[box_i], coordinates[index]):
-                        targeted_points = np.append(targeted_points, index)
-                        break
-        
-        targeted_points = targeted_points.astype(int)
-        all_norms = np.empty((0,3))
-        for target_point in targeted_points:
-            # target_point = int(target_point)
-            points = np.where(adjacency[target_point]>0)[0]
-            inspect_points = np.append(inspect_points, points)
-            for point in points:
-                norm = coordinates[point] - coordinates[target_point]
-                norm /= np.linalg.norm(norm)
-                all_norms = np.append(all_norms, [norm], axis=0)
+        arrived, sent_target = handle_waypoint_logic(position, arrived, sent_target, namespace, target_pub, rate)
+        # if arrived == True and sent_target == True:
+        #     arrived=False
+        #     sent_target = False  # Flag to ensure waypoint is sent only once
+        #     pos = (position.x, position.y, position.z)
             
-        log_info("Running unique")
-        inspect_points, ind = np.unique(inspect_points,axis=0, return_index=True)
-        all_norms = all_norms[ind]
-        inspect_points = inspect_points.astype(int)
-        
-        norm_msg = norms()
-        for i, point in enumerate(inspect_points):
-            facet_mid = Point()
-            facet_mid.x = coordinates[point,0]
-            facet_mid.y = coordinates[point,1]
-            facet_mid.z = coordinates[point,2]
-            norm_msg.facet_mids.append(facet_mid)
-            norm_point = Point()
-            norm_point.x = all_norms[i,0]
-            norm_point.y = all_norms[i,1]
-            norm_point.z = all_norms[i,2]
-            norm_msg.normals.append(norm_point)
+        #     if is_inside_area(pos, AREA_A_BOUNDS):
+        #         # print('you are the problem')
+        #         next_point = generate_waypoint_str(*AREA_B_CENTER, *AREA_B_SIZE)
+        #         print("Uav "+namespace+" inside area A")
+        #     elif is_inside_area(pos, AREA_B_BOUNDS):
+        #         # print('No! You are the problem')
+        #         next_point = generate_waypoint_str(*AREA_A_CENTER, *AREA_A_SIZE)
+        #         print("Uav "+namespace+" inside area B")
+        #     else:
+        #         # If not inside either area, default to AREA_A
+        #         print('Error while finding the UAV position')
+        #         # while not arrived:
+        #         #     target_pub.publish(target_msg)
+        #         #     rate.sleep()
+        #         # arrived = False
+        #         continue
+        #         # next_point = generate_waypoint_str(*AREA_B_CENTER, *AREA_B_SIZE)
 
-        norm_pub.publish(norm_msg)
+        #     target_points = [next_point] 
+
+        #     for point in target_points:
+        #         if not sent_target:
+        #             target_msg = Point()
+        #             target_msg.x = point[0]
+        #             target_msg.y = point[1]
+        #             target_msg.z = point[2]
+        #             log_info("Setting target to point: " + str(point))
+        #             while not arrived:
+        #                 target_pub.publish(target_msg)
+        #                 rate.sleep()
+        #             arrived = False 
+        #             sent_target = True  # Mark as sent to avoid resending
+
+        #         # if not arrived:
+        #         #     target_pub.publish(target_msg)
+        #         else:
+        #             arrived = False  # Reset for next waypoint
+        #             sent_target = False  # Allow the next waypoint to be sent once
+        # while len(occupied_indicies.data) == 0:
+        #     try:
+        #         occupied_indicies = rospy.wait_for_message("/jurong/adjacency/", Int16MultiArray,0.1)
+        #         log_info("Receivied map from Jurong")
+        #     except rospy.exceptions.ROSException as e:
+        #         try:
+        #             occupied_indicies = rospy.wait_for_message("/raffles/adjacency/", Int16MultiArray,0.1)
+        #             log_info("Receivied map from Raffles")
+        #         except rospy.exceptions.ROSException as e:
+        #             try:
+        #                 occupied_indicies = rospy.wait_for_message("/gcs/adjacency/", Int16MultiArray, 0.1)
+        #                 log_info("Receivied map from GCS")
+        #             except rospy.exceptions.ROSException as e:
+        #                 pass
+        #                 # log_info("Waiting for map from explorers")
+        #     rate.sleep() 
+        # log_info("Loading map")
+        # adjacency = np.copy(adjacency_org)
+        # valid_dist_indices =  np.asarray(occupied_indicies.data)
+        # adjacency[:,valid_dist_indices] = 0
+        # log_info("Calculating waypoints")
+        # targeted_points = np.empty((0,1))
+        # inspect_points = np.empty((0,1))
+        # for index in valid_dist_indices:
+        #         for box_i in range(0,int(len(bboxes.points)/8)):
+        #             if check_point_inside_cuboid(bbox_points[box_i], coordinates[index]):
+        #                 targeted_points = np.append(targeted_points, index)
+        #                 break
+        
+        # targeted_points = targeted_points.astype(int)
+        # all_norms = np.empty((0,3))
+        # for target_point in targeted_points:
+        #     # target_point = int(target_point)
+        #     points = np.where(adjacency[target_point]>0)[0]
+        #     inspect_points = np.append(inspect_points, points)
+        #     for point in points:
+        #         norm = coordinates[point] - coordinates[target_point]
+        #         norm /= np.linalg.norm(norm)
+        #         all_norms = np.append(all_norms, [norm], axis=0)
+            
+        # log_info("Running unique")
+        # inspect_points, ind = np.unique(inspect_points,axis=0, return_index=True)
+        # all_norms = all_norms[ind]
+        # inspect_points = inspect_points.astype(int)
+        
+        # norm_msg = norms()
+        # for i, point in enumerate(inspect_points):
+        #     facet_mid = Point()
+        #     facet_mid.x = coordinates[point,0]
+        #     facet_mid.y = coordinates[point,1]
+        #     facet_mid.z = coordinates[point,2]
+        #     norm_msg.facet_mids.append(facet_mid)
+        #     norm_point = Point()
+        #     norm_point.x = all_norms[i,0]
+        #     norm_point.y = all_norms[i,1]
+        #     norm_point.z = all_norms[i,2]
+        #     norm_msg.normals.append(norm_point)
+
+        # norm_pub.publish(norm_msg)
     
-        neighbors = rospy.wait_for_message("/"+namespace+"/nbr_odom_cloud", PointCloud2)
-        uav_positions = np.empty((0,3))
-        uav_indices = np.array([])
-        for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
-            if point[3] != drone_IDs['gcs']:
-                uav_positions = np.append(uav_positions, [[point[0], point[1], point[2]]], axis=0)
-                uav_indices = np.append(uav_indices, point[3])
+        # neighbors = rospy.wait_for_message("/"+namespace+"/nbr_odom_cloud", PointCloud2)
+        # uav_positions = np.empty((0,3))
+        # uav_indices = np.array([])
+        # for _, point in enumerate(sensor_msgs.point_cloud2.read_points(neighbors, skip_nans=True)):
+        #     if point[3] != drone_IDs['gcs']:
+        #         uav_positions = np.append(uav_positions, [[point[0], point[1], point[2]]], axis=0)
+        #         uav_indices = np.append(uav_indices, point[3])
 
-        pos = 0
-        while (pos < len(uav_indices)) and (uav_indices[pos] < drone_IDs[namespace]):
-            pos += 1
+        # pos = 0
+        # while (pos < len(uav_indices)) and (uav_indices[pos] < drone_IDs[namespace]):
+        #     pos += 1
         
-        uav_positions = np.insert(uav_positions, pos, [position.x, position.y, position.z], axis=0)
-        uav_indices = np.insert(uav_indices, pos, drone_IDs[namespace])
+        # uav_positions = np.insert(uav_positions, pos, [position.x, position.y, position.z], axis=0)
+        # uav_indices = np.insert(uav_indices, pos, drone_IDs[namespace])
 
-        num_of_agents = uav_positions.shape[0]
+        # num_of_agents = uav_positions.shape[0]
 
-        points = np.concatenate((uav_positions, coordinates[inspect_points]))
-        num_of_nodes = points.shape[0]
+        # points = np.concatenate((uav_positions, coordinates[inspect_points]))
+        # num_of_nodes = points.shape[0]
 
-        adjacency = np.zeros((num_of_nodes,num_of_nodes))
-        for i in range(num_of_nodes):
-            for j in range(num_of_nodes):
-                adjacency[i,j] = euclidean_distance_3d(points[i],points[j])
+        # adjacency = np.zeros((num_of_nodes,num_of_nodes))
+        # for i in range(num_of_nodes):
+        #     for j in range(num_of_nodes):
+        #         adjacency[i,j] = euclidean_distance_3d(points[i],points[j])
 
-        log_info("Running mTSP")
+        # log_info("Running mTSP")
 
-        waypointsMatrix = calculateCircuits([i for i in range(num_of_agents)], num_of_nodes, adjacency)
+        # waypointsMatrix = calculateCircuits([i for i in range(num_of_agents)], num_of_nodes, adjacency)
 
-        for waypoint in waypointsMatrix[pos]:
-            point = Point()
-            point.x = points[waypoint,0]
-            point.y = points[waypoint,1]
-            point.z = points[waypoint,2]
+        # AREA_A_CENTER = (-53.0,  43.0, 0.0)
+        # AREA_A_SIZE   = (8.0,  8.0, 0.0)
+        # AREA_B_CENTER = (117.0, -57.0, 0.0)
+        # AREA_B_SIZE   = (8.0,   8.0, 0.0)
+
+        # if drone_IDs[namespace] == drone_IDs['sentosa']:
+        #     wp_b = generate_waypoint_str(*AREA_B_CENTER, *AREA_B_SIZE)  
+        #     target_points = [wp_b]
+        # elif drone_IDs[namespace] == drone_IDs['raffles'] or drone_IDs['nanyang']:
+        #     wp_a = generate_waypoint_str(*AREA_A_CENTER, *AREA_A_SIZE)
+        #     # print(wp_a)
+        #     target_points = [wp_a]
+        # else:
+        #     print('U are gay')
+
+        # for waypoint in target_points[pos]:
+        #     point = Point()
+        #     point.x = points[waypoint,0]
+        #     point.y = points[waypoint,1]
+        #     point.z = points[waypoint,2]
+        for point in target_points:
+            target_msg = Point()
+            target_msg.x = point[0]
+            target_msg.y = point[1]
+            target_msg.z = point[2]
             # log_info("Setting target to point: " + str(points[waypoint]))
             while not arrived:        
                 if remaining_time < 10.0:
@@ -413,7 +590,7 @@ def main():
                                     los = True
                             rate.sleep()
                 else:
-                    target_pub.publish(point)
+                    target_pub.publish(target_msg)
                     rate.sleep()
             arrived = False
 

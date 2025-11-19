@@ -10,7 +10,6 @@ from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Point
 from sensor_msgs.msg import PointCloud2
 import sensor_msgs.point_cloud2
-from caric_mission.srv import CreatePPComTopic   
 from visualization_msgs.msg import Marker
 import numpy as np
 import numba as nb

@@ -306,7 +306,7 @@ def updateCallback(msg):
 def euclidean_distance_3d(p1,p2):
     return math.sqrt( math.pow(p1[0]-p2[0],2) + math.pow(p1[1]-p2[1],2) + math.pow(p1[2]-p2[2],2))
 
-def construct_adjacency3333(area_details, coordinates):
+def construct_adjacency(area_details, coordinates):
     global offsets_cross
     num_of_nodes = len(coordinates)
     adjacency_1 = np.zeros((num_of_nodes,num_of_nodes))
@@ -339,7 +339,7 @@ def construct_adjacency3333(area_details, coordinates):
     return adjacency_1
 
 @nb.jit(nopython=True, cache=True)
-def construct_adjacency(data, x, y, z, size_x, size_y, size_z, coordinates):
+def construct_adjacency1111(data, x, y, z, size_x, size_y, size_z, coordinates):
     offsets_cross = [(0,-1,0), (1,0,0), (0,1,0), (-1,0,0), (0,0,1), (0,0,-1)]
     num_of_nodes = len(coordinates)
     adjacency_1 = np.zeros((num_of_nodes,num_of_nodes))
@@ -915,8 +915,8 @@ def main():
     
     coordinates = np.asarray([(x,y,z) for x in xrange for y in yrange for z in zrange])
     start_time = time.time()
-    adjacency_org = construct_adjacency(area_details.resolution.data, area_details.minPoint.x, area_details.minPoint.y, area_details.minPoint.z, area_details.size.x, area_details.size.y, area_details.size.z, coordinates)
-    # adjacency_org = construct_adjacency(area_details, coordinates)
+    # adjacency_org = construct_adjacency(area_details.resolution.data, area_details.minPoint.x, area_details.minPoint.y, area_details.minPoint.z, area_details.size.x, area_details.size.y, area_details.size.z, coordinates)
+    adjacency_org = construct_adjacency(area_details, coordinates)
     end_time = time.time()
     print(namespace+" | Duration: ",end_time - start_time)     
     log_info("Waiting for octomap")
@@ -929,6 +929,7 @@ def main():
     # start_time= time.time()
     publish_graph_viz(coordinates, adjacency)
 
+    
     # create ros control thread
     waypoint = (-3000,-3000,-3000)
     command_thread = threading.Thread(target=go_to_point)
@@ -948,7 +949,7 @@ def main():
         try:
             agent_index = closest_node_index_1((odom.pose.pose.position.x,odom.pose.pose.position.y,odom.pose.pose.position.z),coordinates)
             path = dijkstra(adjacency_neigh, agent_index, target)
-            # print(namespace+' |' +str(path))
+            print(namespace+' |' +str(path))
             # if (len(path)==2):
             #     arrived_msg = Bool()
             #     arrived_msg.data = True
