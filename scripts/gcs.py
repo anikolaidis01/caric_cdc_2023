@@ -29,6 +29,8 @@ rafflesTime = 0
 neighbors = PointCloud2()
 init_flag = False
 # uav_distance_com = 50
+expl_03Map = Int16MultiArray()
+expl_03Time=0
 
 def set_tag(tag):
     global TAG
@@ -57,6 +59,11 @@ def rafflesMapCallback(msg):
     global rafflesMap, rafflesTime
     rafflesMap = msg
     rafflesTime = rospy.Time.now()
+
+def expl_uav_03MapCallback(msg):
+    global expl_03Map, expl_03Time
+    expl_03Map = msg
+    expl_03Time = rospy.Time.now()
 
 def coordCallback(msg):
     global msg_pub, position, namespace, init_flag
@@ -171,7 +178,7 @@ def find_world_min_max(msg, min_max):
     return [minx, maxx, miny, maxy, minz, maxz]
 
 def main():
-    global debug, scenario, jurongMap, jurongTime, rafflesMap, rafflesTime, msg_pub, adj_pub, neighbors, namespace
+    global debug, scenario, jurongMap, jurongTime, rafflesMap, rafflesTime, expl_03Map, expl_03Time, msg_pub, adj_pub, neighbors, namespace
     global init_flag, uav_distance_com
     # init
     try:
@@ -207,10 +214,12 @@ def main():
     
     jurongTime = rospy.Time.now()
     rafflesTime = rospy.Time.now()
+    expl_03Time = rospy.Time.now()
     # subscribe to self topics
     rospy.Subscriber("/"+namespace+"/ground_truth/odometry", Odometry, odomCallback)
     rospy.Subscriber("/jurong/adjacency/", Int16MultiArray, jurongMapCallback)
     rospy.Subscriber("/raffles/adjacency/", Int16MultiArray, rafflesMapCallback)
+    rospy.Subscriber("/expl_uav_03/adjacency/", Int16MultiArray, expl_uav_03MapCallback)
 
     rospy.Subscriber("/world_coords", area, coordCallback)
     rospy.Subscriber('/'+namespace+'/adjacency', Int16MultiArray, adjCallback)
@@ -260,12 +269,17 @@ def main():
 
     log_info("DONE")
     while not rospy.is_shutdown():
-        rate.sleep()
+        # publish_neighbor_clouds()  # 
         msg_pub.publish(area_msg)
-        if jurongTime > rafflesTime:
+        # Publish most recent adjacency map
+        if jurongTime >= rafflesTime and jurongTime >= expl_03Time:
             adj_pub.publish(jurongMap)
-        else:
+        elif rafflesTime >= expl_03Time:
             adj_pub.publish(rafflesMap)
+        else:
+            adj_pub.publish(expl_03Map)
+        # publish_
+        rate.sleep()
 
 if __name__ == '__main__':
     try:

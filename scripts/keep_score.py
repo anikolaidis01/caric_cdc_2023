@@ -68,7 +68,7 @@ def main():
         print(e)
         scenario = 'unknown'
 
-    with open('/home/dronesteam/caric_competition/custom_logs/score_'+scenario+'_'+time_str+'.csv', 'w+') as f:
+    with open('/home/dronesteam/eusome/custom_logs/score_'+scenario+'_'+time_str+'.csv', 'w+') as f:
         
         score = [[sub[0].replace('Detected:    ', '')] for sub in score]
         score = [[sub[0].replace('Detected:   ', '')] for sub in score]
