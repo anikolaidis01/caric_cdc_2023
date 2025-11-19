@@ -1,0 +1,19 @@
+services:
+    ros:
+        container_name: ros
+        build:
+            context: .
+            dockerfile: /ros/Dockerfile.ros
+        volumes:
+            - ./ros/app:/app # Development
+            - ./_shared_code/database/connection.py:/app/database/connection.py
+            - ./db_states.txt:/db_states.txt
+            - /dev/:/dev/ # container access to USB devices
+        device_cgroup_rules:
+            - 'c 188:* rmw'
+        network_mode: host
+        env_file:
+            - ./.env
+        environment:
+            - ROS_IP=$NET_IP
+            - ROS_MASTER_URI=http://${NET_IP}:11311
